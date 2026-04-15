@@ -81,7 +81,7 @@ where `q` is connection quality (0–1) and `v(type)` is level-dependent
 
 ```
 meta_bary = normalize( q_MB·v(BE₁ᴸ) + q_MB·v(BE₂ᴸ) + (1−q_MB)·v(BEᴸ⁻¹) )
-q_MB      = q₃ / √(q₁² + q₂² + q₃²)
+q_MB      = q₃² / √(q₁⁴ + q₂⁴)
 ```
 
 At L13, `BE₁` and `BE₂` are L15 BaryEdges and `BEᴸ⁻¹` is the L14
