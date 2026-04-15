@@ -27,9 +27,9 @@ and BaryEdges should recover more relevant items than one returning nodes
 alone — because BaryEdges act as bridges, pulling in both their parent
 nodes as implied context.
 
-This is falsifiable. We test it with held-out synonym and antonym links
-from a dictionary corpus. If BaryGraph recall@20 does not beat flat
-recall@20, the architecture does not justify its complexity.
+This is falsifiable. We test it with held-out synonym links from a
+dictionary corpus. If BaryGraph recall@20 does not beat flat recall@20,
+the architecture does not justify its complexity.
 
 ---
 
@@ -43,13 +43,13 @@ A dictionary is an ideal first testbed because:
 - **Relations are pre-labeled.** Synonyms, antonyms, derived forms,
   etymology, and hypernyms are explicit in the data. BaryEdge types come
   from the corpus, not a classifier.
-- **Ground truth is free.** Hold out 10% of synonym/antonym links before
+- **Ground truth is free.** Hold out 10% of synonym links before
   ingestion. Measure whether BaryGraph retrieval recovers them better than
   flat search. Zero human annotation required.
 - **Polysemy is rich.** Words like *bank*, *crane*, and *bark* have
   senses so distant in meaning that no embedding will make them neighbours.
   Yet they are deeply related. BaryGraph should surface that structure
-  through MetaBary connections — relationships between relationships.
+  through MetaBary triads — recursive relationships between relationships.
 - **Any bilingual person is an oracle.** Unlike scientific papers or legal
   cases, evaluating whether two word senses are genuinely connected
   requires no domain expertise. The results are immediately human-readable.
@@ -73,11 +73,36 @@ CM₁  →  BaryEdge  →  CM₂
 bary_vec = normalize( q·v(CM₁) + q·v(CM₂) + (1−q)·v(type) )
 ```
 
-where `q` is connection quality (0–1) and `v(type)` is the embedding of
-a fixed natural-language description of the relationship type. A strong
+where `q` is connection quality (0–1) and `v(type)` is a level-dependent
+embedding that captures the relational context of the pairing. A strong
 connection (`q → 1`) produces a barycenter vector close to both parents
 simultaneously — meaning a query near either parent also lands near the
 BaryEdge, and vice versa.
+
+### Forest Structure
+
+BaryGraph organizes all nodes and BaryEdges into a forest with a
+unique-parent constraint: every CM has at most one `parent_edge_id`.
+This means:
+
+- **Triadic recursion:** at higher levels, BaryEdges act as CMs for new
+  connections. Two BaryEdges are bridged by a third, forming a MetaBary
+  triad that climbs the hierarchy.
+- **Single `$graphLookup`** walks from any node to root — no cycle
+  handling, no special traversal logic.
+- **Orphans are allowed** — a concept with no relationships simply has
+  no upward path.
+
+### v(type) — Level-Dependent Context
+
+The third component of the bary_vec formula is not a fixed label. It
+varies by level:
+
+| Level | v(type) source | Why |
+|---|---|---|
+| L15 (senses) | Per-pair embed of both words' lexical neighborhoods (antonyms + synonyms) | Rich contextual signal per pairing |
+| L14 (words) | Fixed TYPE_SENTENCES per edge type | Kaikki relations provide structure |
+| L13+ (MetaBary) | Bridge BaryEdge vector directly | Already encodes relational info from below |
 
 ### The Registry
 
@@ -90,24 +115,16 @@ signals independently before deciding whether to merge them.
 ### Hierarchy
 
 Nodes and BaryEdges are organized into 15 levels from individual sense
-glosses (level 15) up to language family (level 1). BaryEdges only connect
-nodes at the same level. Cross-level relationships are HierarchyLinks.
-
-At level 8 and above, BaryEdges become eligible to act as nodes for new
-connections — producing **MetaBary** objects: relationships between
-relationships. The canonical example:
-
-> *"crane" (bird ↔ machine)* → **MetaBary** → *"mouse" (rodent ↔ device)*
-
-Both are animal-to-tool polysemy patterns. Neither paper or word cluster
-points to this connection. The MetaBary encodes it as a queryable
-first-class object.
+glosses (level 15) up to language family (level 1). BaryEdges connect
+nodes at the same level. Cross-level hierarchy emerges from MetaBary
+triads, where two BaryEdges at level L are bridged by a BaryEdge at
+level L-1, forming a MetaBary at level L-2.
 
 ### Two Vectors Per BaryEdge
 
 | field | what it encodes | how produced |
 |---|---|---|
-| `vector` | structural position — weighted mixture of both parent vectors | algebraic formula, zero embedding calls |
+| `vector` | structural position — weighted mixture of both parent vectors + type context | algebraic formula, zero embedding calls |
 | `summary_vector` | natural-language meaning of the connection | embed(`registry.summary`) |
 
 ---
@@ -131,18 +148,18 @@ Everything runs locally. Zero cloud dependencies. Zero cost.
 kaikki-en.jsonl
       │
       ▼
-  1. Parse         extract senses, relations, etymology
-  2. Embed         768-dim vectors for all sense glosses
-  3. Insert nodes  sense (L15) + word (L14) nodes → MongoDB
-  4. Seed edges    explicit relations → BaryEdges + HierarchyLinks
-  5. Cluster       synonym BaryEdge clusters → synset nodes (L10–12)
-  6. Infer edges   cosine-threshold scan at L10–12, L7–9
-  7. Summarize     selective LLM registry.summary generation (~3 days, async)
-  8. MetaBary      form MetaBary connections at L8+
-  9. Index         build mongot vector indexes
+  1. Parse + Embed    extract senses, relations; embed sense glosses
+  2. Insert nodes     sense (L15) + word (L14) nodes → MongoDB
+  3. L15 BaryEdges    cosine-driven greedy matching of sense pairs
+  4. Word vectors     BE-centroid + orphan senses (no embedding call)
+  5. L14 BaryEdges    kaikki relations in fermion order (antonyms first)
+  6. Orphan re-entry  unpaired CMs absorbed into existing BEs
+  7. MetaBary         L13 triads + recursive L12→L1
+  8. Summarize        selective LLM registry.summary generation (~3 days, async)
+  9. Index            build mongot vector indexes
       │
       ▼
-  queryable in ~6–10 hours
+  queryable in ~7–12 hours
   fully enriched in ~4 days
 ```
 
@@ -159,7 +176,7 @@ similarity. Finds things that *look like* the query.
 
 **BaryGraph retrieval** — query returns a mix of nodes and BaryEdges.
 Each BaryEdge result implies its two parent nodes as context. Effective
-retrieved context is 2–3× the raw top-20. Finds things that *connect to*
+retrieved context is 2–3x the raw top-20. Finds things that *connect to*
 what the query is about, not just things that resemble it.
 
 **Cross-domain bridge query** — filter for `edge_type: 'same_phenomenon'`.
@@ -173,7 +190,7 @@ structural bridge between two concepts that share no surface similarity.
 
 The primary test is simple and binary:
 
-1. Hold out 10% of explicit synonym/antonym links before ingestion
+1. Hold out 10% of explicit synonym links before ingestion
 2. Ingest the remaining 90%
 3. For each held-out pair, query the held-out word's gloss
 4. **Success:** the partner word appears in the CM lineage of any top-20 result
@@ -192,7 +209,7 @@ If the PoC validates the hypothesis:
 1. **Multi-language** — add French, German, Japanese kaikki dumps.
    Translation BaryEdges become cross-language bridges. MetaBary encodes
    the same metaphor pattern across languages: *"il pleut des cordes"*
-   (French) ↔ *"it's raining cats and dogs"* (English) — both encode
+   (French) <-> *"it's raining cats and dogs"* (English) — both encode
    rainfall intensity through culturally-specific impossibility. This is
    the original motivation for the architecture.
 
@@ -214,18 +231,21 @@ If the PoC validates the hypothesis:
 barygraph-kaikki/
 ├── CLAUDE.md                  # development guide for AI-assisted coding
 ├── README.md                  # this file
+├── BaryGraph_v1.1.md          # parent architecture spec (v1.2)
+├── BaryGraph_Kaikki_PoC_v0.4.md  # full PoC spec (v0.4)
 ├── data/
 │   └── kaikki-en.jsonl        # download from kaikki.org (not in repo)
 ├── scripts/
 │   ├── 01_parse.js
 │   ├── 02_embed.js
 │   ├── 03_insert_nodes.js
-│   ├── 04_seed_edges.js
-│   ├── 05_cluster_synsets.js
-│   ├── 06_infer_edges.js
-│   ├── 07_summarize.js
-│   ├── 08_metabary.js
-│   ├── 09_index.js
+│   ├── 04_l15_edges.js        # cosine-driven L15 BE formation
+│   ├── 05_word_vectors.js     # BE-centroid + orphan senses
+│   ├── 06_l14_edges.js        # kaikki-driven, fermion order
+│   ├── 07_orphan_reentry.js
+│   ├── 08_metabary.js         # L13 triads + recursive
+│   ├── 09_summarize.js
+│   ├── 10_index.js
 │   └── eval/
 │       ├── holdout.js
 │       ├── recall.js
@@ -234,6 +254,7 @@ barygraph-kaikki/
 │   ├── embed.js
 │   ├── llm.js
 │   ├── bary_vec.js
+│   ├── disambiguate.js
 │   └── db.js
 └── indexes/
     └── vector_index.json
@@ -257,12 +278,13 @@ npm install
 node scripts/01_parse.js
 node scripts/02_embed.js
 node scripts/03_insert_nodes.js
-node scripts/04_seed_edges.js
-node scripts/05_cluster_synsets.js
-node scripts/06_infer_edges.js
-node scripts/07_summarize.js    # async — system is queryable before this completes
+node scripts/04_l15_edges.js
+node scripts/05_word_vectors.js
+node scripts/06_l14_edges.js
+node scripts/07_orphan_reentry.js
 node scripts/08_metabary.js
-node scripts/09_index.js
+node scripts/09_summarize.js    # async — system is queryable before this completes
+node scripts/10_index.js
 
 # 5. Run evaluation
 node scripts/eval/holdout.js    # generate holdout set first
@@ -289,8 +311,8 @@ barycenter, with position, weight, and semantic content of its own.
 
 ## Status
 
-- [x] Architecture specification (BaryGraph v1.0)
-- [x] Kaikki PoC specification (v0.2)
+- [x] Architecture specification (BaryGraph v1.2)
+- [x] Kaikki PoC specification (v0.4)
 - [ ] Ingestion pipeline implementation
 - [ ] Evaluation harness
 - [ ] First results
