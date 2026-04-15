@@ -3,12 +3,13 @@
 Development guide for the BaryGraph proof-of-concept using the English
 kaikki.org dictionary corpus. Read this before writing any code.
 
-> **Architecture (v0.3):** No HierarchyLinks. Two doc types only: `node`
-> and `baryedge`. MetaBary = BaryEdge with `is_metabary: true`. Cross-level
-> hierarchy encoded as `hierarchy_direction: "up"`.
+> **Architecture (v0.4):** Forest structure with unique-parent constraint.
+> Two doc types: `node` and `baryedge`. Everything above L14 is MetaBary
+> by construction (no `is_metabary` flag). L1 = top (most abstract),
+> L15 = bottom (most concrete sense).
 
 > **Kaikki structure:** Relations live at the **word level**, not the sense
-> level. Disambiguate to sense using `_dis1` weights (non-zero → direct)
+> level. Disambiguate to sense using `_dis1` weights (non-zero = direct)
 > or cosine similarity fallback. `antonyms[]` sparse for nouns — use
 > `synonyms[]` only for primary eval.
 
@@ -17,13 +18,14 @@ kaikki.org dictionary corpus. Read this before writing any code.
 ## What We Are Building
 
 A knowledge graph where every relationship is a first-class stored object
-(**BaryEdge**) with its own embedding vector.
+(**BaryEdge**) with its own embedding vector, organized as a forest with
+unique-parent constraint.
 
 **Hypothesis:** BaryEdge retrieval outperforms flat NN search on
-synonym recall@20. Falsifiable — see §Evaluation.
+synonym recall@20. Falsifiable — see Evaluation section.
 
 **Reference docs:**
-- `VISION-KAIKKI-POC.md` — full spec (v0.3)
+- `BaryGraph_Kaikki_PoC_v0.4.md` — full spec (v0.4)
 - `BaryGraph_v1.1.md` — parent architecture
 
 ---
@@ -55,12 +57,13 @@ barygraph-kaikki/
 │   ├── 01_parse.js
 │   ├── 02_embed.js
 │   ├── 03_insert_nodes.js
-│   ├── 04_seed_edges.js       # 4a sense-level, 4b word-level, 4c polysemy, 4d stub promotion
-│   ├── 05_cluster_synsets.js
-│   ├── 06_infer_edges.js
-│   ├── 07_summarize.js        # async LLM summaries
-│   ├── 08_metabary.js         # lateral MetaBary at L8+
-│   ├── 09_index.js
+│   ├── 04_l15_edges.js        # cosine-driven L15 BE formation
+│   ├── 05_word_vectors.js     # BE-centroid + orphan senses
+│   ├── 06_l14_edges.js        # kaikki-driven, fermion order
+│   ├── 07_orphan_reentry.js   # L15 then L14 orphan absorption
+│   ├── 08_metabary.js         # L13 triads + L12→L1 recursive
+│   ├── 09_summarize.js        # async LLM summaries
+│   ├── 10_index.js
 │   └── eval/
 │       ├── holdout.js
 │       ├── recall.js
@@ -96,8 +99,8 @@ senses[i]:  id (stable), glosses[], examples[], tags[], topics[],
 translations[i]: lang, lang_code, sense (gloss string), word, _dis1 (non-zero)
 ```
 
-**`_dis1` field:** space-separated integers, one per sense. Non-zero →
-use dominant index. All zero → cosine fallback. See `lib/disambiguate.js`.
+**`_dis1` field:** space-separated integers, one per sense. Non-zero =
+use dominant index. All zero = cosine fallback. See `lib/disambiguate.js`.
 
 **IPA:** inside `sounds[]` array as `{ipa: "...", tags: [...]}`, not a
 top-level field. Extract first entry without dialect tags for word node.
@@ -106,8 +109,8 @@ top-level field. Extract first entry without dialect tags for word node.
 
 ## MongoDB Collection
 
-Database: `barygraph_poc`  
-Collection: `barygraph`  
+Database: `barygraph_poc`
+Collection: `barygraph`
 **Two doc_types only: `node` and `baryedge`**
 
 ### Standard indexes
@@ -118,7 +121,7 @@ db.barygraph.createIndex({ cm1_id: 1 })
 db.barygraph.createIndex({ cm2_id: 1 })
 db.barygraph.createIndex({ node_type: 1 })
 db.barygraph.createIndex({ edge_type: 1, level: 1 })
-db.barygraph.createIndex({ is_metabary: 1, hierarchy_direction: 1 })
+db.barygraph.createIndex({ parent_edge_id: 1 })
 db.barygraph.createIndex({ 'properties.word': 1, 'properties.pos': 1 })
 db.barygraph.createIndex({ 'properties.sense_id': 1 })
 ```
@@ -133,8 +136,6 @@ db.barygraph.createIndex({ 'properties.sense_id': 1 })
     { "type": "filter", "path": "doc_type" },
     { "type": "filter", "path": "level" },
     { "type": "filter", "path": "edge_type" },
-    { "type": "filter", "path": "is_metabary" },
-    { "type": "filter", "path": "hierarchy_direction" },
     { "type": "filter", "path": "node_type" }
   ]
 }
@@ -146,8 +147,7 @@ db.barygraph.createIndex({ 'properties.sense_id': 1 })
   "fields": [
     { "type": "vector", "path": "summary_vector", "numDimensions": 768, "similarity": "cosine" },
     { "type": "filter", "path": "edge_type" },
-    { "type": "filter", "path": "level" },
-    { "type": "filter", "path": "hierarchy_direction" }
+    { "type": "filter", "path": "level" }
   ]
 }
 ```
@@ -160,28 +160,29 @@ db.barygraph.createIndex({ 'properties.sense_id': 1 })
 
 ```js
 {
-  _id:        ObjectId(),
-  doc_type:   'node',
-  node_type:  'sense' | 'word' | 'synset' | 'field' | 'register' | 'stub',
-  level:      Number,      // 1–15
-  label:      String,
-  vector:     [Number],    // 768-dim; word nodes = centroid of sense vectors
-  surface:    Number,
-  rotation:   0.0,
-  properties: Object,      // see node_type table below
-  created_at: Date,
-  updated_at: Date
+  _id:            ObjectId(),
+  doc_type:       'node',
+  node_type:      'sense' | 'word' | 'synset' | 'field' | 'register' | 'stub',
+  level:          Number,      // 1–15
+  label:          String,
+  vector:         [Number],    // 768-dim
+  surface:        Number,
+  rotation:       0.0,
+  parent_edge_id: ObjectId() | null,  // ≤1 parent; null = orphan
+  properties:     Object,      // see node_type table below
+  created_at:     Date,
+  updated_at:     Date
 }
 ```
 
-| node_type | level | key properties |
-|---|---|---|
-| `sense` | 15 | word, pos, sense_id, sense_idx, gloss, examples, tags, topics, wikidata |
-| `word` | 14 | word, pos, etymology, forms, ipa |
-| `synset` | 10–12 | hypernym, member_count |
-| `field` | 7–9 | name, pos_group |
-| `register` | 4–6 | name, tag — **may collapse to L7** |
-| `stub` | any | word, reason — no vector |
+| node_type | level | key properties | vector source |
+|---|---|---|---|
+| `sense` | 15 | word, pos, sense_id, sense_idx, gloss, examples, tags, topics, wikidata | embed(gloss + examples[:2]) |
+| `word` | 14 | word, pos, etymology, forms, ipa | BE-centroid + orphan senses |
+| `synset` | 10–12 | hypernym, member_count | cluster centroid |
+| `field` | 7–9 | name, pos_group | cluster centroid |
+| `register` | 4–6 | name, tag — **may collapse to L7** | cluster centroid |
+| `stub` | any | word, reason — no vector | none |
 
 ### BaryEdge
 
@@ -189,56 +190,61 @@ db.barygraph.createIndex({ 'properties.sense_id': 1 })
 {
   _id:                ObjectId(),
   doc_type:           'baryedge',
-  cm1_id:             ObjectId(),
-  cm2_id:             ObjectId(),
-  level:              Number,    // same for horizontal; cm1.level for cross-level MetaBary
-  edge_type:          String,
-  q:                  Number,    // 0–1
+  cm1_id:             ObjectId(),   // → node (L14/L15) or baryedge (L≤13)
+  cm2_id:             ObjectId(),   // → node (L14/L15) or baryedge (L≤13)
+  level:              Number,       // same as CMs at L14/L15; cm1.level - 2 at L≤13
+  vector:             [Number],     // bary_vec — algebraic
+  parent_edge_id:     ObjectId() | null,  // ≤1 parent; null = orphan
+  connection_strength: Number,      // q (base) or q_MB (rescaled)
+
+  // L14/L15 ONLY:
+  edge_type:          String | null,  // kaikki relation (L14) or null (L15)
+  type_vector:        [Number],       // v(type)
+  q:                  Number,         // 0–1
   strength:           Number,
-  vector:             [Number],  // bary_vec — algebraic
-  summary_vector:     [Number],  // embed(registry.summary) — separate signal
+  summary_vector:     [Number],       // embed(registry.summary)
   registry: {
     shared_concepts:  [String],
     divergence:       [String],
     summary:          String
   },
-  is_metabary:          Boolean,
-  hierarchy_direction:  null | 'lateral' | 'up',
-  common_ancestor_id:   ObjectId() | null,  // required for lateral only
-  source:               'ingested' | 'inferred' | 'manual' | 'placeholder',
-  confidence:           Number,
-  created_at:           Date,
-  updated_at:           Date
+  source:             'ingested' | 'inferred' | 'manual' | 'placeholder',
+  confidence:         Number,
+  created_at:         Date,
+  updated_at:         Date
 }
 ```
 
-`hierarchy_direction`:
-- `null` — standard BaryEdge
-- `'lateral'` — same-level MetaBary (cross-paradigm; requires `common_ancestor_id`)
-- `'up'` — cross-level MetaBary (`cm1` more specific, `cm2` more abstract; no ancestor required)
+**Above L14:** only `_id`, `doc_type`, `cm1_id`, `cm2_id`, `level`,
+`vector`, `parent_edge_id`, `connection_strength`, `created_at`,
+`updated_at`. Everything else is implicit or unnecessary.
 
 ---
 
-## Edge Types
+## Core Equations (lib/bary_vec.js)
 
-| kaikki field | `edge_type` | `is_metabary` | `hierarchy_direction` | `q` seed | level |
-|---|---|---|---|---|---|
-| `synonyms[]` | `same_phenomenon` | false | null | 0.90 | 15 or 14 |
-| `antonyms[]` | `contradicts` | false | null | 0.85 | 15 or 14 |
-| `derived[]` | `extends` | false | null | 0.60 | 14 |
-| `related[]` | `extends` | false | null | 0.60 | 15 or 14 |
-| `coordinate_terms[]` | `same_phenomenon` | false | null | 0.70 | 15 or 14 |
-| `etymology_templates` | `applies_to` | false | null | 0.70 | 14 |
-| same-headword senses | `is_instance_of` | false | null | max(0.40,cos) | 15 |
-| `hypernyms[]` | `is_instance_of` | **true** | **'up'** | 0.65 | cross |
-| `hyponyms[]` | `is_instance_of` | **true** | **'up'** | 0.65 | cross |
-| `meronyms[]` | `applies_to` | **true** | **'up'** | 0.55 | cross |
-| `holonyms[]` | `applies_to` | **true** | **'up'** | 0.55 | cross |
-| polysemy pattern family | `same_phenomenon` | **true** | **'lateral'** | inferred | 8+ |
+### BaryEdge Vector (L14, L15)
 
----
+```js
+function computeBaryVec(v_cm1, v_cm2, v_type, q) {
+  const raw = v_cm1.map((x, i) => q * x + q * v_cm2[i] + (1 - q) * v_type[i]);
+  const norm = Math.sqrt(raw.reduce((s, x) => s + x * x, 0));
+  return raw.map(x => x / norm);
+}
+```
 
-## Key Formulas (lib/bary_vec.js)
+### MetaBary Vector (L13+)
+
+```js
+function computeMetaBary(v_be1, v_be2, v_bridge, q1, q2, q3) {
+  const q_mb = q3 / Math.sqrt(q1*q1 + q2*q2 + q3*q3);
+  const raw = v_be1.map((x, i) => q_mb * x + q_mb * v_be2[i] + (1 - q_mb) * v_bridge[i]);
+  const norm = Math.sqrt(raw.reduce((s, x) => s + x * x, 0));
+  return raw.map(x => x / norm);
+}
+```
+
+### TYPE_SENTENCES (L14 only)
 
 ```js
 const TYPE_SENTENCES = {
@@ -248,13 +254,23 @@ const TYPE_SENTENCES = {
   applies_to:      'these two words share a common origin or root',
   is_instance_of:  'this relationship is a specific instance of the broader relationship',
 };
-
-function computeBaryVec(v_cm1, v_cm2, v_type, q) {
-  const raw = v_cm1.map((x, i) => q * x + q * v_cm2[i] + (1 - q) * v_type[i]);
-  const norm = Math.sqrt(raw.reduce((s, x) => s + x * x, 0));
-  return raw.map(x => x / norm);
-}
 ```
+
+### v(type) at L15 — per-pair lexical neighborhood
+
+```js
+// type_text = "W_A (antonyms: a₁, a₂; synonyms: s₁, s₂); W_B (antonyms: ...)"
+// v(type) = embed(type_text)
+```
+
+### Word Vector (L14)
+
+```js
+// v(word) = normalize(Σ v(BE_i) for BEs holding W's senses
+//                   + Σ v(sense_j) for orphan senses of W)
+```
+
+---
 
 ## Disambiguation (lib/disambiguate.js)
 
@@ -273,16 +289,19 @@ function assignSense(item, senseVectors, threshold = 0.72) {
 }
 ```
 
+---
+
 ## Embed Strings
 
 ```python
 # Sense: gloss + first 2 examples
 embed_text = gloss + ' ' + ' '.join(ex['text'] for ex in examples[:2])
 
-# Word: centroid of sense vectors (no embedding call)
-word_vector = normalize(sum(q_i * sense_vec_i for each sense))
+# Word: BE-centroid + orphan senses (no embedding call)
+word_vector = normalize(sum(v(BE_i)) + sum(v(orphan_sense_j)))
 
 # BaryEdge bary_vec: algebraic (no embedding call)
+# BaryEdge type_vector: embed(type_text) at L15, embed(TYPE_SENTENCES) at L14
 # BaryEdge summary_vector: embed(registry.summary)
 ```
 
@@ -290,40 +309,70 @@ word_vector = normalize(sum(q_i * sense_vec_i for each sense))
 
 ## Ingestion Pipeline
 
-| Stage | Script | Time | Blocking |
-|---|---|---|---|
-| 1. Parse | `01_parse.js` | ~10 min | Yes |
-| 2. Embed | `02_embed.js` | ~10 min | Yes |
-| 3. Insert nodes | `03_insert_nodes.js` | ~30 min | Yes |
-| 4. Seed edges (4a–4d) | `04_seed_edges.js` | ~45 min | Yes |
-| 5. Cluster synsets | `05_cluster_synsets.js` | ~20 min | Yes |
-| 6. Infer edges | `06_infer_edges.js` | ~1 hour | Yes |
-| 7. Summarize | `07_summarize.js` | ~3 days | **No — async** |
-| 8. MetaBary | `08_metabary.js` | ~2 hours | After 7 |
-| 9. Index | `09_index.js` | ~4–8 hours | Yes |
+| Stage | Script | Blocking |
+|---|---|---|
+| 1. Parse + Embed | `01_parse.js`, `02_embed.js` | Yes |
+| 2. Insert nodes | `03_insert_nodes.js` | Yes |
+| 3. L15 BE formation | `04_l15_edges.js` | Yes |
+| 4. L14 word vectors | `05_word_vectors.js` | Yes |
+| 5. L14 BE formation | `06_l14_edges.js` | Yes |
+| 6. Orphan re-entry | `07_orphan_reentry.js` | Yes |
+| 7. MetaBary (L13→L1) | `08_metabary.js` | Yes |
+| 8. Summarize | `09_summarize.js` | **No — async** |
+| 9. Index | `10_index.js` | Yes |
 
-**Queryable after ~6–10 hours. Fully enriched after ~4 days.**
+**Queryable after ~7–12 hours. Fully enriched after ~4 days.**
 
-### Stage 4 sub-passes
+### Stage 3: L15 BE formation
 
 ```
-4a. Sense-level relations → L15 BaryEdges directly (no disambiguation)
-4b. Word-level relations:
-      – _dis1 or cosine → L15 BaryEdge if sense found
-      – otherwise → L14 BaryEdge
-      – hypernyms/hyponyms/meronyms → cross-level MetaBary ('up')
-4c. Polysemy: all sense pairs of same headword
-      q = max(0.40, cosine(sense_i, sense_j)), edge_type = 'is_instance_of'
-4d. Stub promotion: replace placeholder MetaBary cm1/cm2 with real BaryEdge IDs
+3a. ANN cosine scan among all L15 sense vectors
+3b. Greedy match: highest cosine first, skip already-paired (q_min = 0.72)
+3c. For each pair: build type_text (parent words + antonyms + synonyms),
+    batch-embed → v(type)
+3d. Compute bary_vec, set parent_edge_id on both senses
 ```
 
-### Stage 7: Summary decision
+### Stage 4: L14 word vectors
+
+```
+For each word W:
+  v(W) = normalize(Σ v(BE_i) for BEs holding W's senses
+                 + Σ v(sense_j) for orphan senses of W)
+```
+
+Computed after L15 BE formation. No embedding call. Strict stage boundary.
+
+### Stage 5: L14 BE formation (fermion order)
+
+```
+Priority 1: contradicts        q_seed 0.85
+Priority 2: applies_to         q_seed 0.55
+Priority 3: is_instance_of     q_seed 0.65
+Priority 4: extends            q_seed 0.60
+Priority 5: same_phenomenon    q_seed 0.70
+Priority 6: synonyms           q_seed 0.90
+```
+
+Skip words already paired at current priority tier. v(type) = embed(TYPE_SENTENCES[edge_type]).
+
+### Stage 6: Orphan re-entry
+
+For each level (L15, then L14): orphan CMs pair with nearest existing
+BE at that level. New BE formed using standard formula.
+
+### Stage 7: MetaBary (L13→L1)
+
+For each L14 BE (bridge): find two unparented L15 BEs with mutual
+cos > 0.9. Form L13 MetaBary. Repeat recursively upward until no
+new triads form.
+
+### Stage 8: Summary decision
 
 ```js
 const needsLLM = e =>
     e.edge_type === 'contradicts'
  || e.edge_type === 'is_instance_of'
- || e.is_metabary === true
  || (e.edge_type === 'same_phenomenon' && e.strength < 0.85)
  || (e.edge_type === 'extends'         && e.strength < 0.85)
  || (e.edge_type === 'applies_to'      && e.strength < 0.80);
@@ -360,26 +409,20 @@ index: 'barygraph_summary_vector', path: 'summary_vector'
 filter: { doc_type: 'baryedge' }
 ```
 
-### Lateral MetaBary
-```js
-filter: { is_metabary: true, hierarchy_direction: 'lateral' }
-```
-
-### Hierarchy traversal (single `$graphLookup` — no workaround)
+### Hierarchy traversal (forest walk)
 ```js
 db.barygraph.aggregate([
-  { $match: { _id: baryEdgeId }},
+  { $match: { _id: startNodeId }},
   { $graphLookup: {
       from: 'barygraph',
-      startWith: '$_id',
-      connectFromField: '_id',
-      connectToField: 'cm1_id',
-      as: 'hierarchy_chain',
-      maxDepth: 10,
-      restrictSearchWithMatch: { is_metabary: true, hierarchy_direction: 'up' }
+      startWith: '$parent_edge_id',
+      connectFromField: 'parent_edge_id',
+      connectToField: '_id',
+      as: 'upward_chain',
+      maxDepth: 15
   }},
   { $project: {
-      chain: { $sortArray: { input: '$hierarchy_chain', sortBy: { level: 1 } } }
+      chain: { $sortArray: { input: '$upward_chain', sortBy: { level: 1 } } }
   }}
 ])
 ```
@@ -403,8 +446,10 @@ db.barygraph.aggregate([
 | Disambiguation accuracy | 100-sample manual verification |
 | `_dis1` vs cosine | Precision comparison when `_dis1 > 0` vs fallback |
 | `summary_vector` lift A/B | Single signal vs. merged |
-| MetaBary coherence | Top-50 lateral manual inspection |
-| Hierarchy correctness | Cross-level paths vs. `topics[]`/`categories[]` |
+| Forest coherence | Top-50 L13 triad manual inspection |
+| Hierarchy correctness | Forest paths vs. `topics[]`/`categories[]` |
+| Fermion order impact | Recall with/without antonym-first priority |
+| Orphan rate | % CMs with parent_edge_id = null per level |
 
 ---
 
@@ -420,7 +465,8 @@ db.barygraph.aggregate([
 | Targets not in dump | Medium | Stub nodes; exclude from eval |
 | LLM stage interrupted | High | Checkpoint every 10K; idempotent |
 | mongot no multi-vector | Medium | `barygraph_summaries` fallback |
-| Stub not promoted | Medium | Post-stage-4d validation pass |
+| Unique-parent too sparse | Medium | Track orphan rate; relax if >60% orphan |
+| L15 ANN quality | Low | Verify recall vs brute-force on 10K sample |
 
 ---
 
@@ -431,8 +477,9 @@ db.barygraph.aggregate([
 3. **Sparse L4–6** — collapse to L7 if <5% tag coverage
 4. **Polysemy q floor** — start 0.40, tune post MetaBary formation
 5. **Disambiguation threshold** — 0.72 default; tune via secondary eval
-6. **Cross-level MetaBary threshold** — 0.80 (same as lateral) or lower?
-7. **Stub promotion** — inline stage 4d or separate pass after stage 6?
+6. **MetaBary stopping criterion** — "no triads form" or hard cap?
+7. **Stub promotion** — inline or separate pass?
+8. **Antonym/synonym _dis1 filtering** — revisit if L15 eval noisy
 
 ---
 
@@ -447,4 +494,4 @@ db.barygraph.aggregate([
 
 ---
 
-*BaryGraph Kaikki PoC v0.3 · CM Theory Project · April 2026*
+*BaryGraph Kaikki PoC v0.4 · CM Theory Project · April 2026*
