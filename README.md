@@ -233,31 +233,30 @@ barygraph-kaikki/
 ├── README.md                  # this file
 ├── BaryGraph_v1.1.md          # parent architecture spec (v1.2)
 ├── BaryGraph_Kaikki_PoC_v0.4.md  # full PoC spec (v0.4)
+├── pyproject.toml
+├── docker-compose.yml         # MongoDB (+ mongot) and ollama
+├── Makefile
+├── .env.example
 ├── data/
 │   └── kaikki-en.jsonl        # download from kaikki.org (not in repo)
-├── scripts/
-│   ├── 01_parse.js
-│   ├── 02_embed.js
-│   ├── 03_insert_nodes.js
-│   ├── 04_l15_edges.js        # cosine-driven L15 BE formation
-│   ├── 05_word_vectors.js     # BE-centroid + orphan senses
-│   ├── 06_l14_edges.js        # kaikki-driven, fermion order
-│   ├── 07_orphan_reentry.js
-│   ├── 08_metabary.js         # L13 triads + recursive
-│   ├── 09_summarize.js
-│   ├── 10_index.js
-│   └── eval/
-│       ├── holdout.js
-│       ├── recall.js
-│       └── ab_summary.js
+├── pipeline_state/            # resumability checkpoints (gitignored)
+├── indexes/
+│   └── vector_index.json
 ├── lib/
-│   ├── embed.js
-│   ├── llm.js
-│   ├── bary_vec.js
-│   ├── disambiguate.js
-│   └── db.js
-└── indexes/
-    └── vector_index.json
+│   ├── config.py  log.py  checkpoint.py  db.py
+│   ├── embed.py   llm.py
+│   ├── bary_vec.py            # bary_vec / metabary / word_vector formulas
+│   └── disambiguate.py        # _dis1 + cosine sense assignment
+├── scripts/
+│   ├── _base.py               # shared CLI bootstrap + `bary` dispatcher
+│   ├── s01_parse.py … s10_index.py
+│   ├── dev/make_fixture.py
+│   └── eval/
+│       ├── holdout.py  recall.py  ab_summary.py
+└── tests/
+    ├── fixtures/kaikki-sample.jsonl
+    ├── unit/
+    └── integration/
 ```
 
 ---
@@ -265,33 +264,54 @@ barygraph-kaikki/
 ## Getting Started
 
 ```bash
-# 1. Download kaikki English dump
-curl -L https://kaikki.org/dictionary/English/kaikki.org-dictionary-English.jsonl \
-  -o data/kaikki-en.jsonl
+# 1. Install (Python 3.11+)
+cp .env.example .env
+make install                    # pip install -e ".[dev]"
 
-# 2. Install dependencies
-npm install
+# 2. Start local services (project-owned Mongo on port 27117 — won't touch
+#    any other Mongo you may have on 27017).
+make up                         # MongoDB Community 8 + mongot (atlas-local)
+make up-gpu                     # + ollama (requires NVIDIA GPU), optional
+docker exec barygraph-ollama ollama pull nomic-embed-text:v1.5
 
-# 3. Start MongoDB Community + mongot (see MongoDB docs for setup)
+# 3. Download kaikki English dump (idempotent + resumable)
+make fetch-kaikki
 
-# 4. Run ingestion stages in order
-node scripts/01_parse.js
-node scripts/02_embed.js
-node scripts/03_insert_nodes.js
-node scripts/04_l15_edges.js
-node scripts/05_word_vectors.js
-node scripts/06_l14_edges.js
-node scripts/07_orphan_reentry.js
-node scripts/08_metabary.js
-node scripts/09_summarize.js    # async — system is queryable before this completes
-node scripts/10_index.js
+# 4. Verify the environment before kicking off a multi-day ingest
+make preflight                  # mongo, ollama, embed dim, dump size, disk, dirs
+
+# 5. Run ingestion stages in order
+python -m scripts.s01_parse
+python -m scripts.s02_embed
+python -m scripts.s03_insert_nodes
+python -m scripts.s04_l15_edges
+python -m scripts.s05_word_vectors
+python -m scripts.s06_l14_edges
+python -m scripts.s07_orphan_reentry
+python -m scripts.s08_metabary
+python -m scripts.s09_summarize    # async — system is queryable before this completes
+python -m scripts.s10_index
+# or: make pipeline
 
 # 5. Run evaluation
-node scripts/eval/holdout.js    # generate holdout set first
-node scripts/eval/recall.js     # measure BaryGraph vs flat recall@20
+python -m scripts.eval.holdout     # generate holdout set first
+python -m scripts.eval.recall      # measure BaryGraph vs flat recall@20
 ```
 
-Hardware: 32 GB GPU VRAM (Llama Scout Q4), 32 GB+ RAM, 150 GB disk.
+### Development
+
+```bash
+make lint        # ruff + mypy
+make test        # unit tests (no services)
+make test-int    # integration tests (requires `make up`)
+```
+
+CI (GitHub Actions) runs lint + unit on every push, and an integration
+smoke test against a MongoDB service container using fake embed/LLM
+backends — no GPU required.
+
+Hardware for full ingestion: 32 GB GPU VRAM (Llama Scout Q4), 32 GB+ RAM,
+150 GB disk.
 
 ---
 
