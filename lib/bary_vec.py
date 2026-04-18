@@ -47,9 +47,9 @@ def compute_metabary_vec(
     q2: float,
     q3: float,
 ) -> tuple[np.ndarray, float]:
-    """MetaBary (L13+): q_mb = q3 / sqrt(q1² + q2² + q3²); then bary_vec with q=q_mb."""
-    denom = float(np.sqrt(q1 * q1 + q2 * q2 + q3 * q3))
-    q_mb = q3 / denom if denom > 0.0 else 0.0
+    """MetaBary (L13+): q_mb = q3² / sqrt(q1⁴ + q2⁴ + q3⁴); then bary_vec with q=q_mb."""
+    denom = float(np.sqrt(q1**4 + q2**4 + q3**4))
+    q_mb = (q3 * q3) / denom if denom > 0.0 else 0.0
     vec = compute_bary_vec(v_be1, v_be2, v_bridge, q_mb)
     return vec, q_mb
 

@@ -26,14 +26,16 @@ def _env_bool(key: str, default: bool = False) -> bool:
     return v.strip().lower() in {"1", "true", "yes", "on"}
 
 
-# Default q_seed per L14 edge_type (fermion order). See CLAUDE.md "Stage 5".
+# Default q_seed per L14 fermion-order tier. Keys match the "q_seed key" column
+# of the fermion table in CLAUDE.md (one key per priority tier — NOT per
+# edge_type, since tiers 5 and 6 both produce edge_type='same_phenomenon').
 # Overridable individually via Q_SEED_<UPPER>.
 _DEFAULT_Q_SEEDS: dict[str, float] = {
     "contradicts": 0.85,
     "applies_to": 0.55,
     "is_instance_of": 0.65,
     "extends": 0.60,
-    "same_phenomenon": 0.70,
+    "coordinate_terms": 0.70,
     "synonyms": 0.90,
 }
 
@@ -56,13 +58,9 @@ class Settings:
     # --- Models (Ollama) ---
     ollama_url: str = "http://localhost:11434"
     embed_model: str = "nomic-embed-text:v1.5"
-    llm_model: str = "llama4-scout:q4_k_m"
     embed_dim: int = 768
     embed_timeout_seconds: float = 120.0
-    llm_timeout_seconds: float = 300.0
-    llm_max_tokens: int = 80
     fake_embed: bool = False
-    fake_llm: bool = False
 
     # --- Data / state ---
     kaikki_path: Path = field(default_factory=lambda: Path("data/kaikki-en.jsonl"))
@@ -78,10 +76,6 @@ class Settings:
     disambig_threshold: float = 0.72           # lib.disambiguate cosine fallback
     meta_bary_cos_threshold: float = 0.90      # Stage 7: L13 triad formation
     polysemy_q_floor: float = 0.40             # open question; tune post L14
-    summary_token_limit: int = 60              # Stage 8: reject if exceeded
-    # Stage 8 "needsLLM" strength cutoffs (see CLAUDE.md):
-    summary_strong_cutoff: float = 0.85        # same_phenomenon / extends
-    summary_applies_to_cutoff: float = 0.80
 
     # --- L14 edge q_seeds (fermion order) ---
     q_seeds: dict[str, float] = field(default_factory=_load_q_seeds)
@@ -100,13 +94,9 @@ class Settings:
             mongo_test_db_prefix=_env_str("MONGO_TEST_DB_PREFIX", cls.mongo_test_db_prefix),
             ollama_url=_env_str("OLLAMA_URL", cls.ollama_url),
             embed_model=_env_str("EMBED_MODEL", cls.embed_model),
-            llm_model=_env_str("LLM_MODEL", cls.llm_model),
             embed_dim=_env_int("EMBED_DIM", cls.embed_dim),
             embed_timeout_seconds=_env_float("EMBED_TIMEOUT_SECONDS", cls.embed_timeout_seconds),
-            llm_timeout_seconds=_env_float("LLM_TIMEOUT_SECONDS", cls.llm_timeout_seconds),
-            llm_max_tokens=_env_int("LLM_MAX_TOKENS", cls.llm_max_tokens),
             fake_embed=_env_bool("BARY_FAKE_EMBED", False),
-            fake_llm=_env_bool("BARY_FAKE_LLM", False),
             kaikki_path=Path(_env_str("KAIKKI_PATH", "data/kaikki-en.jsonl")),
             parsed_dir=Path(_env_str("PARSED_DIR", "data/parsed")),
             pipeline_state_dir=Path(_env_str("PIPELINE_STATE_DIR", "pipeline_state")),
@@ -118,13 +108,6 @@ class Settings:
                 "META_BARY_COS_THRESHOLD", cls.meta_bary_cos_threshold
             ),
             polysemy_q_floor=_env_float("POLYSEMY_Q_FLOOR", cls.polysemy_q_floor),
-            summary_token_limit=_env_int("SUMMARY_TOKEN_LIMIT", cls.summary_token_limit),
-            summary_strong_cutoff=_env_float(
-                "SUMMARY_STRONG_CUTOFF", cls.summary_strong_cutoff
-            ),
-            summary_applies_to_cutoff=_env_float(
-                "SUMMARY_APPLIES_TO_CUTOFF", cls.summary_applies_to_cutoff
-            ),
             q_seeds=_load_q_seeds(),
             log_level=_env_str("LOG_LEVEL", cls.log_level),
         )

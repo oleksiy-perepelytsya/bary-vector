@@ -16,7 +16,6 @@ FIXTURE = "tests/fixtures/kaikki-sample.jsonl"
 @pytest.fixture(autouse=True)
 def _env(monkeypatch, tmp_state_dir, mongo_test_db):
     monkeypatch.setenv("BARY_FAKE_EMBED", "1")
-    monkeypatch.setenv("BARY_FAKE_LLM", "1")
     monkeypatch.setenv("KAIKKI_PATH", FIXTURE)
     yield
 

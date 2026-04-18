@@ -25,7 +25,7 @@ def test_load_env_override(monkeypatch):
 def test_q_seeds_defaults(monkeypatch):
     for k in (
         "Q_SEED_CONTRADICTS", "Q_SEED_APPLIES_TO", "Q_SEED_IS_INSTANCE_OF",
-        "Q_SEED_EXTENDS", "Q_SEED_SAME_PHENOMENON", "Q_SEED_SYNONYMS",
+        "Q_SEED_EXTENDS", "Q_SEED_COORDINATE_TERMS", "Q_SEED_SYNONYMS",
     ):
         monkeypatch.delenv(k, raising=False)
     s = Settings.load()
@@ -34,7 +34,7 @@ def test_q_seeds_defaults(monkeypatch):
         "applies_to": 0.55,
         "is_instance_of": 0.65,
         "extends": 0.60,
-        "same_phenomenon": 0.70,
+        "coordinate_terms": 0.70,
         "synonyms": 0.90,
     }
 
@@ -51,12 +51,7 @@ def test_all_tunables_overridable(monkeypatch):
     overrides = {
         "META_BARY_COS_THRESHOLD": "0.95",
         "POLYSEMY_Q_FLOOR": "0.5",
-        "SUMMARY_TOKEN_LIMIT": "42",
-        "SUMMARY_STRONG_CUTOFF": "0.9",
-        "SUMMARY_APPLIES_TO_CUTOFF": "0.7",
         "EMBED_TIMEOUT_SECONDS": "10",
-        "LLM_TIMEOUT_SECONDS": "20",
-        "LLM_MAX_TOKENS": "123",
         "EMBED_BATCH_SIZE": "7",
     }
     for k, v in overrides.items():
@@ -64,12 +59,7 @@ def test_all_tunables_overridable(monkeypatch):
     s = Settings.load()
     assert s.meta_bary_cos_threshold == 0.95
     assert s.polysemy_q_floor == 0.5
-    assert s.summary_token_limit == 42
-    assert s.summary_strong_cutoff == 0.9
-    assert s.summary_applies_to_cutoff == 0.7
     assert s.embed_timeout_seconds == 10
-    assert s.llm_timeout_seconds == 20
-    assert s.llm_max_tokens == 123
     assert s.embed_batch_size == 7
 
 

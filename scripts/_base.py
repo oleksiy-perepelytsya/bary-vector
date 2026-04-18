@@ -21,7 +21,6 @@ STAGES: dict[str, str] = {
     "06_l14_edges": "scripts.s06_l14_edges",
     "07_orphan_reentry": "scripts.s07_orphan_reentry",
     "08_metabary": "scripts.s08_metabary",
-    "09_summarize": "scripts.s09_summarize",
     "10_index": "scripts.s10_index",
 }
 
@@ -56,12 +55,11 @@ def bootstrap(
     cp_mod.save(cp, settings)  # write initial / touched checkpoint
 
     log.info(
-        "settings: db=%s coll=%s kaikki=%s fake_embed=%s fake_llm=%s",
+        "settings: db=%s coll=%s kaikki=%s fake_embed=%s",
         settings.mongo_db,
         settings.mongo_collection,
         args.kaikki_path or settings.kaikki_path,
         settings.fake_embed,
-        settings.fake_llm,
     )
     return settings, args, log, cp
 

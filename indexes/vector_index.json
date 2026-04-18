@@ -11,16 +11,5 @@
         { "type": "filter", "path": "node_type" }
       ]
     }
-  },
-  {
-    "name": "barygraph_summary_vector",
-    "type": "vectorSearch",
-    "definition": {
-      "fields": [
-        { "type": "vector", "path": "summary_vector", "numDimensions": 768, "similarity": "cosine" },
-        { "type": "filter", "path": "edge_type" },
-        { "type": "filter", "path": "level" }
-      ]
-    }
   }
 ]

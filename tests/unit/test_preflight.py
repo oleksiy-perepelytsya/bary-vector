@@ -12,7 +12,6 @@ from scripts import preflight
 
 def _settings(monkeypatch, kaikki: Path, parsed: Path, state: Path) -> Settings:
     monkeypatch.setenv("BARY_FAKE_EMBED", "1")
-    monkeypatch.setenv("BARY_FAKE_LLM", "1")
     monkeypatch.setenv("KAIKKI_PATH", str(kaikki))
     monkeypatch.setenv("PARSED_DIR", str(parsed))
     monkeypatch.setenv("PIPELINE_STATE_DIR", str(state))

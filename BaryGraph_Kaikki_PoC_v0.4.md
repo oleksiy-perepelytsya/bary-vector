@@ -15,6 +15,8 @@
 > - Added: `parent_edge_id` on all nodes and BaryEdges.
 > - TYPE_SENTENCES used only at L14.
 > - Fermion order for L14 matching (antonyms first, synonyms last).
+> - Removed: `strength`, `registry`, `summary_vector`, LLM summary stage.
+>   The PoC is now embedding-only; `bary_vec` is the sole retrieval signal.
 
 > **Level orientation:** L1 = top (most abstract), L15 = bottom (most
 > concrete sense). MetaBary climbs from L to L-2 using L-1 as bridge.
@@ -27,8 +29,7 @@ Validate the core BaryGraph hypothesis — that relationship-aware vector
 retrieval outperforms flat nearest-neighbour search — using the English
 machine-readable dictionary from kaikki.org as corpus. The PoC runs
 entirely on local hardware: MongoDB Community Edition with mongot for
-storage and vector search, Llama 4 Scout (Q4, 32 GB) for selective
-summary generation, and nomic-embed-text for embeddings.
+storage and vector search, and nomic-embed-text for embeddings.
 
 ### 1.1 Why This Corpus
 
@@ -53,8 +54,6 @@ summary generation, and nomic-embed-text for embeddings.
 | `bary_vec` formula is useful | NN search on `bary_vec` retrieves correct CM pair |
 | Forest-structure MetaBary encodes polysemy | Triad paths vs. WordNet sense clusters |
 | Cross-level hierarchy via single `$graphLookup` | Forest traversal from L15 to root |
-| `registry.summary` improves retrieval | A/B: edges with vs. without LLM summary |
-| `summary_vector` separate from `bary_vec` | A/B: merged vs. separate signal |
 | Sense disambiguation from `_dis1` weights | Precision of sense-level edge assignment |
 | Fermion-ordered matching preserves rare signals | Antonym edges survive synonym flood |
 
@@ -81,7 +80,7 @@ where `q` is connection quality (0–1) and `v(type)` is level-dependent
 
 ```
 meta_bary = normalize( q_MB·v(BE₁ᴸ) + q_MB·v(BE₂ᴸ) + (1−q_MB)·v(BEᴸ⁻¹) )
-q_MB      = q₃² / √(q₁⁴ + q₂⁴)
+q_MB      = q₃² / √(q₁⁴ + q₂⁴ + q₃⁴)
 ```
 
 At L13, `BE₁` and `BE₂` are L15 BaryEdges and `BEᴸ⁻¹` is the L14
@@ -160,7 +159,8 @@ are finalized (including orphan re-entry). Strict stage boundary.
 ## 3. Invariants
 
 1. **Unique parent (soft):** every CM has at most one `parent_edge_id`.
-   Orphans allowed.
+   Orphans allowed. `parent_edge_id` always references a `baryedge`
+   document — a node (word, sense, etc.) is a CM, never a parent edge.
 2. **Triadic recursion only above L14.** No lateral edges, no cross-level
    BEs outside triads.
 3. **Forest structure** — single `$graphLookup` climbs to root.
@@ -317,25 +317,18 @@ Single collection `barygraph`. Two document types: `node`, `baryedge`.
   level:            Number,       // same as CMs at L14/L15;
                                   //   = cm1.level - 2 for MetaBary (L≤13)
   vector:           [Number],     // bary_vec — algebraic
-  parent_edge_id:   ObjectId() | null,   // ≤1 parent; null = orphan
+  parent_edge_id:   ObjectId() | null,   // ≤1 parent; ALWAYS → baryedge doc; null = orphan
   connection_strength: Number,    // q (base) or q_MB (rescaled)
 
   // L14/L15 ONLY:
   edge_type:        String | null,  // kaikki relation (L14) or null (L15 cosine-matched)
   type_vector:      [Number],       // v(type) — per-pair embed (L15) or TYPE_SENTENCES (L14)
   q:                Number,         // 0–1
-  strength:         Number,
-  summary_vector:   [Number],       // embed(registry.summary) — separate signal
-  registry: {
-    shared_concepts:  [String],
-    divergence:       [String],
-    summary:          String
-  },
   source:           'ingested' | 'inferred' | 'manual' | 'placeholder',
   confidence:       Number,
 
   // DROPPED above L14:
-  // edge_type, type_vector, registry, summary_vector, source, confidence
+  // edge_type, type_vector, q, source, confidence
 
   created_at:     Date,
   updated_at:     Date
@@ -363,14 +356,17 @@ L14 BaryEdge matching follows fermion order — rarer, more informative
 relations are matched first. Once a word has `parent_edge_id` set, it is
 skipped at lower-priority tiers.
 
-| Priority | edge_type | kaikki field | q_seed |
-|---|---|---|---|
-| 1 | `contradicts` | `antonyms[]` | 0.85 |
-| 2 | `applies_to` | `meronyms[]`, `holonyms[]` | 0.55 |
-| 3 | `is_instance_of` | `hypernyms[]`, `hyponyms[]` | 0.65 |
-| 4 | `extends` | `derived[]`, `related[]` | 0.60 |
-| 5 | `same_phenomenon` | `coordinate_terms[]` | 0.70 |
-| 6 | `same_phenomenon` | `synonyms[]` | 0.90 |
+| Priority | edge_type | kaikki field | q_seed key | q_seed |
+|---|---|---|---|---|
+| 1 | `contradicts` | `antonyms[]` | `contradicts` | 0.85 |
+| 2 | `applies_to` | `meronyms[]`, `holonyms[]` | `applies_to` | 0.55 |
+| 3 | `is_instance_of` | `hypernyms[]`, `hyponyms[]` | `is_instance_of` | 0.65 |
+| 4 | `extends` | `derived[]`, `related[]` | `extends` | 0.60 |
+| 5 | `same_phenomenon` | `coordinate_terms[]` | `coordinate_terms` | 0.70 |
+| 6 | `same_phenomenon` | `synonyms[]` | `synonyms` | 0.90 |
+
+`q_seed key` is the lookup key into `Settings.q_seeds` — one per
+priority tier (tiers 5/6 share `edge_type` but differ in q).
 
 ### 7.2 L15 Cosine-Matched Edges
 
@@ -388,13 +384,17 @@ sense pairs. No edge_type — the relationship is captured entirely by
 
 ### 7.3 Polysemy Edges (L15, same headword)
 
-Between all sense pairs of the same headword:
+Same-headword sense pairs are seeded into the L15 greedy-match
+candidate pool with a q floor:
 
 ```
 q = max(0.40, cosine(sense_vec_i, sense_vec_j))
 ```
 
-These participate in L15 matching and feed into L14 word vectors.
+Greedy matching still selects at most one parent BE per sense
+(unique-parent invariant); the floor only ensures polysemous senses
+remain eligible to pair with each other even when their raw cosine is
+low. Any resulting BEs feed into L14 word vectors.
 
 ---
 
@@ -452,8 +452,12 @@ placeholder L14 word node vectors in place.
 6b. Skip words already paired at this priority tier
 6c. embed(TYPE_SENTENCES[edge_type]) → v(type)
 6d. Compute bary_vec, set parent_edge_id
-6e. Orphan re-entry: unpaired words match with existing L14 BEs
 ```
+
+L14 orphan re-entry runs as the next stage (`s07_orphan_reentry.py`):
+each unpaired word matches the nearest existing L14 BE; the new BE
+inherits that partner's `edge_type`, `type_vector`, and `q` (no new
+embedding call).
 
 ### Stage 7 — L13 MetaBary (polysemy bridge)
 
@@ -462,7 +466,7 @@ mutual `cos > 0.9`:
 
 ```
 v(L13_MB) = normalize( q_MB·v(L15_BE₁) + q_MB·v(L15_BE₂) + (1−q_MB)·v(L14_BE) )
-q_MB      = q_L14 / √(q_L15₁² + q_L15₂² + q_L14²)
+q_MB      = q_L14² / √(q_L15₁⁴ + q_L15₂⁴ + q_L14⁴)
 ```
 
 This creates natural polysemy triads:
@@ -488,25 +492,7 @@ Stop when no new triads form.
 
 Pure geometry — no kaikki, no TYPE_SENTENCES.
 
-### Stage 9 — Summary (LLM, async)
-
-- Generate `registry.summary` selectively by heuristic:
-
-```js
-const needsLLM = e =>
-    e.edge_type === 'contradicts'
- || e.edge_type === 'is_instance_of'
- || (e.edge_type === 'same_phenomenon' && e.strength < 0.85)
- || (e.edge_type === 'extends'         && e.strength < 0.85)
- || (e.edge_type === 'applies_to'      && e.strength < 0.80);
-```
-
-- Prompt: both glosses verbatim → one sentence → reject if >60 tokens
-  or neither word present.
-- Embed summary → `summary_vector`. Parallel signal, not in hot path.
-- Checkpoint every 10K; idempotent.
-
-### Stage 10 — Index
+### Stage 9 — Index
 
 - Build mongot vector indexes (~4–8 hours)
 
@@ -521,10 +507,9 @@ const needsLLM = e =>
 | 6. L14 BE formation | ~30 min | Yes |
 | 7. L13 MetaBary | ~20 min | Yes |
 | 8. L12→L1 recursive | ~1–2 hours | Yes |
-| 9. Summary generation | ~3 days | **No — async** |
-| 10. Index | ~4–8 hours | Yes |
+| 9. Index | ~4–8 hours | Yes |
 
-**First queryable: ~7–12 hours. Full enrichment: ~4 days.**
+**Queryable: ~7–12 hours.**
 
 ### Resumability
 
@@ -553,10 +538,10 @@ db.barygraph.createIndex({ 'properties.word': 1, 'properties.pos': 1 })
 db.barygraph.createIndex({ 'properties.sense_id': 1 })
 ```
 
-### 9.2 Vector Indexes
+### 9.2 Vector Index
 
 ```json
-// Primary — bary_vec (all doc_types)
+// bary_vec (all doc_types)
 {
   "fields": [
     { "type": "vector", "path": "vector", "numDimensions": 768, "similarity": "cosine" },
@@ -566,19 +551,7 @@ db.barygraph.createIndex({ 'properties.sense_id': 1 })
     { "type": "filter", "path": "node_type" }
   ]
 }
-
-// Secondary — summary_vector (BaryEdges only)
-{
-  "fields": [
-    { "type": "vector", "path": "summary_vector", "numDimensions": 768, "similarity": "cosine" },
-    { "type": "filter", "path": "edge_type" },
-    { "type": "filter", "path": "level" }
-  ]
-}
 ```
-
-**Removed from vector index filters:** `is_metabary`, `hierarchy_direction`
-(no longer exist in schema).
 
 ---
 
@@ -593,12 +566,6 @@ filter: { doc_type: 'node', level: { $in: [14, 15] } }
 ```js
 filter: { doc_type: { $in: ['node', 'baryedge'] }, level: { $in: [14, 15] } }
 // + $lookup cm1_id, cm2_id
-```
-
-### Summary-vector retrieval
-```js
-index: 'barygraph_summary_vector', path: 'summary_vector'
-filter: { doc_type: 'baryedge' }
 ```
 
 ### Hierarchy traversal (forest walk via parent_edge_id)
@@ -642,8 +609,6 @@ needed. Single `$graphLookup` walks from any node to root.
 | `bary_vec` precision | BaryEdge 5-NN should include cm1 and cm2 |
 | Disambiguation accuracy | Sample 100 word-level relations; manually verify sense assignment |
 | `_dis1` vs cosine | Precision when `_dis1 > 0` vs cosine fallback |
-| `summary_vector` lift A | `bary_vec` recall vs. `summary_vector` recall |
-| `summary_vector` lift B | Merged vs. separate signals |
 | Forest coherence | Manual top-50 triad inspection at L13 |
 | Hierarchy correctness | Forest paths vs. `topics[]` / `categories[]` |
 | Fermion order impact | Recall with/without antonym-first priority |
@@ -673,12 +638,10 @@ needed. Single `$graphLookup` walks from any node to root.
 | L14 word vectors | ~5 min | Yes |
 | L14 BE formation | ~30 min | Yes |
 | L13+ MetaBary | ~1–2 hours | Yes |
-| Summary generation | ~3 days | No — async |
 | Build indexes | ~4–8 hours | Yes |
-| **First queryable** | **~7–12 hours** | |
-| **Full enrichment** | **~4 days** | |
+| **Queryable** | **~7–12 hours** | |
 
-Hardware: 32 GB GPU VRAM, 32–64 GB RAM, 150–200 GB disk, 8+ cores.
+Hardware: 8–16 GB GPU VRAM, 32–64 GB RAM, 150–200 GB disk, 8+ cores.
 Cost: zero (all open-source).
 
 ---
@@ -691,7 +654,7 @@ Cost: zero (all open-source).
 | §7 — MongoDB Atlas | Community + mongot | Local-first PoC |
 | Embedding dimensions | 768-dim (not 1536) | Glosses are short |
 | `v(type)` as edge label | Per-pair neighborhood embed (L15), TYPE_SENTENCES (L14 only) | Bare labels embed poorly; per-pair is richer |
-| `summary_vector` merged | Stored separately | A/B test first |
+| `registry.summary` / `summary_vector` | Dropped | PoC is embedding-only |
 | All relations at sense level | Word-level with `_dis1`/cosine disambiguation | Actual kaikki structure |
 | Lateral MetaBary | Eliminated | Forest structure with unique-parent |
 | `is_metabary` flag | Eliminated | Redundant — level > 14 implies MetaBary |
@@ -704,6 +667,7 @@ Cost: zero (all open-source).
 - **Algebraically closed model** — everything is
   `normalize(q·a + q·b + (1−q)·c)`, recursive.
 - **Forest structure** — trivial hierarchy queries, no cycle handling.
+- **Embedding-only pipeline** — no LLM dependency, no async stage.
 - **Context-rich v(type) at L15** without LLM calls in the hot path.
 - **Bootstrap chain:** sense → L15 BE → word vector → L14 BE → L13 MB →
   … each stage feeds the next with increasingly structured signal.
@@ -750,13 +714,10 @@ Cost: zero (all open-source).
 | Risk | Likelihood | Mitigation |
 |---|---|---|
 | mongot HNSW OOM | Medium | Baryedge subset first; fp16; Qdrant fallback |
-| LLM summaries hallucinate | Low–Med | Spot-check 1K; reject >60 tokens |
 | `_dis1` all-zero → poor disambiguation | Medium | Cosine fallback; track accuracy |
 | `antonyms[]` too sparse | **Known** | Synonyms only for primary eval |
-| `bary_vec` averages to mush | **This is the test** | Fall back to `summary_vector` as primary |
+| `bary_vec` averages to mush | **This is the test** | Tune q / v(type); falsify if no lift |
 | Targets not in dump | Medium | Stub nodes; exclude from eval |
-| LLM stage interrupted | High | Checkpoint every 10K; idempotent |
-| mongot no multi-vector | Medium | `barygraph_summaries` fallback |
 | Unique-parent too sparse | Medium | Track orphan rate; relax if >60% orphan |
 | L15 ANN quality | Low | Verify recall vs brute-force on 10K sample |
 
@@ -764,14 +725,13 @@ Cost: zero (all open-source).
 
 ## 19. Open Questions
 
-1. **mongot multi-vector index** — test before committing
-2. **Synset clustering** — agglomerative vs. Leiden
-3. **Sparse L4–6** — collapse to L7 if <5% tag coverage
-4. **Polysemy q floor** — start 0.40, tune after MetaBary formation
-5. **Disambiguation threshold** — 0.72 default; tune via secondary eval
-6. **MetaBary stopping criterion** — "no triads form" (natural) or hard cap?
-7. **Stub promotion** — inline in stage 4 or separate pass?
-8. **Antonym/synonym _dis1 filtering for v(type)** — revisit if L15 eval noisy
+1. **Synset clustering** — agglomerative vs. Leiden
+2. **Sparse L4–6** — collapse to L7 if <5% tag coverage
+3. **Polysemy q floor** — start 0.40, tune after MetaBary formation
+4. **Disambiguation threshold** — 0.72 default; tune via secondary eval
+5. **MetaBary stopping criterion** — "no triads form" (natural) or hard cap?
+6. **Stub promotion** — inline in stage 4 or separate pass?
+7. **Antonym/synonym _dis1 filtering for v(type)** — revisit if L15 eval noisy
 
 ---
 

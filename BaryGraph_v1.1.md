@@ -14,7 +14,7 @@
 > - Word/concept vectors computed as BE-centroid of children, not raw
 >   embedding centroid.
 > - MetaBary formula: `normalize(q_MB·v(BE₁) + q_MB·v(BE₂) + (1-q_MB)·v(bridge))`
->   with rescaled `q_MB = q₃ / √(q₁² + q₂² + q₃²)`.
+>   with rescaled `q_MB = q₃² / √(q₁⁴ + q₂⁴ + q₃⁴)`.
 > - Level orientation clarified: L1 = top (most abstract), L15 = bottom
 >   (most concrete).
 
@@ -122,7 +122,7 @@ MetaBary vector:
 
 ```
 meta_bary = normalize( q_MB·v(BE₁) + q_MB·v(BE₂) + (1−q_MB)·v(bridge) )
-q_MB      = q₃ / √(q₁² + q₂² + q₃²)
+q_MB      = q₃² / √(q₁⁴ + q₂⁴ + q₃⁴)
 ```
 
 where `q₁`, `q₂` are the connection strengths of `BE₁` and `BE₂`, and

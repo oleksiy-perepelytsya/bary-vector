@@ -37,7 +37,6 @@ jobs:
     env:
       MONGO_URI: mongodb://localhost:27117/?directConnection=true
       BARY_FAKE_EMBED: "1"
-      BARY_FAKE_LLM: "1"
       KAIKKI_PATH: tests/fixtures/kaikki-sample.jsonl
     steps:
       - uses: actions/checkout@v4

@@ -45,8 +45,8 @@ def _check_mongo(s: Settings) -> Check:
 
 
 def _check_ollama(s: Settings) -> Check:
-    if s.fake_embed and s.fake_llm:
-        return Check("ollama.reachable", True, "skipped (fake backends enabled)")
+    if s.fake_embed:
+        return Check("ollama.reachable", True, "skipped (fake embed enabled)")
     try:
         resp = httpx.get(s.ollama_url.rstrip("/") + "/api/version", timeout=5.0)
         resp.raise_for_status()

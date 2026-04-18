@@ -18,7 +18,6 @@ def tmp_state_dir(tmp_path, monkeypatch):
 @pytest.fixture
 def settings(tmp_state_dir, monkeypatch) -> Settings:
     monkeypatch.setenv("BARY_FAKE_EMBED", "1")
-    monkeypatch.setenv("BARY_FAKE_LLM", "1")
     return Settings.load()
 
 

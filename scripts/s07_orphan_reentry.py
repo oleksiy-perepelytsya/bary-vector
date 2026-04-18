@@ -1,4 +1,8 @@
-"""Absorb orphan CMs into nearest existing BE (L15 then L14)."""
+"""Absorb orphan L14 word CMs into nearest existing L14 BE.
+
+L15 orphan re-entry happens earlier, inside s04_l15_edges (it must
+precede s05_word_vectors). This stage handles L14 only.
+"""
 
 from __future__ import annotations
 

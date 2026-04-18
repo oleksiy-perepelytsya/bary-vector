@@ -26,7 +26,7 @@ test-int:
 	pytest -m integration -v
 
 STAGES = s01_parse s02_embed s03_insert_nodes s04_l15_edges s05_word_vectors \
-         s06_l14_edges s07_orphan_reentry s08_metabary s09_summarize s10_index
+         s06_l14_edges s07_orphan_reentry s08_metabary s10_index
 
 pipeline:
 	@for s in $(STAGES); do \

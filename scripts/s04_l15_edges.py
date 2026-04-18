@@ -1,4 +1,8 @@
-"""Cosine-driven greedy L15 BaryEdge formation."""
+"""Cosine-driven greedy L15 BaryEdge formation + L15 orphan re-entry.
+
+L15 orphan re-entry MUST complete here (before s05_word_vectors) — see
+v0.4 §2.4: word vectors depend on the finalized set of L15 BEs.
+"""
 
 from __future__ import annotations
 

@@ -55,7 +55,7 @@ def test_bary_vec_unit_norm():
 
 def test_metabary_qmb_formula():
     _, q_mb = compute_metabary_vec(_rand(seed=1), _rand(seed=2), _rand(seed=3), 0.3, 0.4, 0.5)
-    expected = 0.5 / math.sqrt(0.3**2 + 0.4**2 + 0.5**2)
+    expected = 0.5**2 / math.sqrt(0.3**4 + 0.4**4 + 0.5**4)
     assert math.isclose(q_mb, expected, rel_tol=1e-9)
 
 

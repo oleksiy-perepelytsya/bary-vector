@@ -293,7 +293,7 @@ python -m scripts.s09_summarize    # async — system is queryable before this c
 python -m scripts.s10_index
 # or: make pipeline
 
-# 5. Run evaluation
+# 6. Run evaluation
 python -m scripts.eval.holdout     # generate holdout set first
 python -m scripts.eval.recall      # measure BaryGraph vs flat recall@20
 ```
