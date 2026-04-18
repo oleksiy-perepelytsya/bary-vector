@@ -227,7 +227,7 @@ set λ = 0. If it helps, tune upward. Tracked as parameter R6 in §12.
 2. **Triadic recursion only above L14.** No lateral edges, no cross-level
    BEs outside triads.
 3. **Forest structure** — single `$graphLookup` climbs to root.
-4. **BE and MetaBary interchangeable above L15** — same doc type, same role.
+4. **BE and MetaBary interchangeable above L14** — same doc type, same role.
 5. **Algebraically closed** — everything is
    `normalize(q·a + q·b + (1−q)·c)`, recursive.
 
