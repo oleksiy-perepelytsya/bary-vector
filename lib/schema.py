@@ -45,6 +45,8 @@ class ParsedSense:
     relations: list[ParsedSenseRelation] = field(default_factory=list)
     # Text used by stage 02 to produce the embedding
     embed_text: str = ""
+    # Filled by stage 02 (embed)
+    vector: list[float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -58,8 +60,10 @@ class ParsedWord:
     pos: str
     lang_code: str
     ipa: str | None = None
-    forms: list[dict[str, Any]] = field(default_factory=list)
+    forms: list[str] = field(default_factory=list)      # surface form strings only
     etymology: str = ""
+    char_len: int = 0
+    syllable_ct: int = 0
     sense_ids: list[str] = field(default_factory=list)  # ids of senses emitted
     # Word-level relations (kaikki default)
     relations: list[ParsedSenseRelation] = field(default_factory=list)
@@ -71,3 +75,5 @@ class ParsedWord:
 # Stage 01 output files, relative to Settings.parsed_dir.
 SENSES_FILENAME = "senses.jsonl"
 WORDS_FILENAME = "words.jsonl"
+# Stage 02 output: senses.jsonl with `vector` populated.
+SENSES_EMBEDDED_FILENAME = "senses_embedded.jsonl"

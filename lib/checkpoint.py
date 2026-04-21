@@ -16,11 +16,23 @@ class Checkpoint:
     last_id: str | None = None
     processed: int = 0
     total: int = 0
+    done: bool = False
+    completed_at: str | None = None
     updated_at: str = ""
 
     def touch(self) -> Checkpoint:
         self.updated_at = datetime.now(timezone.utc).isoformat()
         return self
+
+    def mark_done(self) -> Checkpoint:
+        self.done = True
+        self.completed_at = datetime.now(timezone.utc).isoformat()
+        return self
+
+
+def is_done(stage: str, settings: Settings) -> bool:
+    cp = load(stage, settings)
+    return cp is not None and cp.done
 
 
 def _path(stage: str, settings: Settings) -> Path:

@@ -2,24 +2,189 @@
 
 L15 orphan re-entry MUST complete here (before s05_word_vectors) — see
 v0.4 §2.4: word vectors depend on the finalized set of L15 BEs.
+
+Safeguard: refuses to run if any L15 BaryEdge already exists (would
+violate the unique-parent invariant on re-run). Use ``--reset`` after
+dropping edges, or ``--force`` to override.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime, timezone
 
+import numpy as np
+from pymongo import UpdateOne
+
+from lib.bary_vec import build_l15_type_text, compute_bary_vec
 from lib.db import get_collection
-from scripts._base import bootstrap
+from lib.docs import baryedge
+from lib.embed import get_embedder
+from lib.match import greedy_unique_match, nearest_row, top_k_pairs
+from scripts._base import bootstrap, finish
 
 STAGE = "04_l15_edges"
+
+
+def _word_neighborhood(coll, word: str, pos: str) -> tuple[list[str], list[str]]:
+    """Return (antonyms, synonyms) for the L14 word node, for L15 type_text."""
+    doc = coll.find_one(
+        {"doc_type": "node", "node_type": "word", "properties.word": word, "properties.pos": pos},
+        {"properties.relations": 1},
+    )
+    ants: list[str] = []
+    syns: list[str] = []
+    for r in (doc or {}).get("properties", {}).get("relations", []):
+        if r["kind"] == "antonyms":
+            ants.append(r["word"])
+        elif r["kind"] == "synonyms":
+            syns.append(r["word"])
+    return ants, syns
 
 
 def run(argv: Sequence[str] | None = None) -> None:
     settings, args, log, cp = bootstrap(STAGE, argv)
     coll = get_collection(settings)
-    log.info("start last_id=%s processed=%d dry_run=%s", cp.last_id, cp.processed, args.dry_run)
-    _ = coll  # connection acquired; core logic follows in a later PR
-    raise NotImplementedError(f"{STAGE}: implement in follow-up PR")
+    log.info("start processed=%d dry_run=%s q_min=%.2f", cp.processed, args.dry_run,
+             settings.q_min_l15)
+
+    if not args.dry_run and not args.force:
+        if coll.count_documents({"doc_type": "baryedge", "level": 15}, limit=1):
+            raise RuntimeError(
+                "L15 baryedges already present — re-running would double-parent senses. "
+                "Drop them and use --reset, or pass --force."
+            )
+
+    # --- Load all L15 sense nodes ---
+    cur = coll.find(
+        {"doc_type": "node", "node_type": "sense", "level": 15},
+        {"_id": 1, "vector": 1, "properties.word": 1, "properties.pos": 1},
+    ).sort("_id", 1)
+    senses = list(cur)
+    if args.limit:
+        senses = senses[: args.limit]
+    n = len(senses)
+    if n < 2:
+        log.warning("fewer than 2 L15 senses (%d) — nothing to pair", n)
+        cp.total = n
+        if not args.dry_run:
+            finish(cp, settings, log)
+        return
+
+    ids = [s["_id"] for s in senses]
+    words = [(s["properties"]["word"], s["properties"]["pos"]) for s in senses]
+    V = np.asarray([s["vector"] for s in senses], dtype=np.float32)  # already L2-normalized
+
+    # Same-headword pairs get the polysemy q floor (v0.4 §7.3).
+    by_word: dict[tuple[str, str], list[int]] = {}
+    for i, wp in enumerate(words):
+        by_word.setdefault(wp, []).append(i)
+    same_word: set[frozenset[int]] = set()
+    for idxs in by_word.values():
+        for a in range(len(idxs)):
+            for b in range(a + 1, len(idxs)):
+                same_word.add(frozenset((idxs[a], idxs[b])))
+
+    # --- 4a/4b: greedy highest-cosine matching ---
+    pairs = greedy_unique_match(
+        top_k_pairs(V),
+        threshold=settings.q_min_l15,
+        same_word=same_word,
+        polysemy_floor=settings.polysemy_q_floor,
+    )
+    log.info("greedy match: %d pairs from %d senses", len(pairs), n)
+
+    embedder = get_embedder(settings)
+    nb_cache: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
+
+    def nb(wp: tuple[str, str]) -> tuple[list[str], list[str]]:
+        if wp not in nb_cache:
+            nb_cache[wp] = _word_neighborhood(coll, wp[0], wp[1])
+        return nb_cache[wp]
+
+    # --- 4c/4d: build type_text per pair, batch-embed, compute bary_vec ---
+    batch_n = args.batch_size or settings.embed_batch_size
+    be_ids: list = []
+    be_vecs: list[np.ndarray] = []
+    be_q: list[float] = []
+    paired: set[int] = set()
+    parent_updates: list[UpdateOne] = []
+
+    for start in range(0, len(pairs), batch_n):
+        chunk = pairs[start : start + batch_n]
+        texts = []
+        for i, j, _q in chunk:
+            ant_a, syn_a = nb(words[i])
+            ant_b, syn_b = nb(words[j])
+            texts.append(
+                build_l15_type_text(words[i][0], ant_a, syn_a, words[j][0], ant_b, syn_b)
+            )
+        type_vecs = embedder.embed(texts)
+        edge_docs = []
+        for (i, j, q), tv in zip(chunk, type_vecs, strict=True):
+            bv = compute_bary_vec(V[i], V[j], tv, q)
+            edge_docs.append(
+                baryedge(ids[i], ids[j], 15, bv, q, edge_type=None, type_vector=tv,
+                         source="inferred", confidence=float(q))
+            )
+            paired.add(i)
+            paired.add(j)
+        if args.dry_run:
+            continue
+        res = coll.insert_many(edge_docs)
+        for (i, j, q), eid, doc in zip(chunk, res.inserted_ids, edge_docs, strict=True):
+            be_ids.append(eid)
+            be_vecs.append(np.asarray(doc["vector"], dtype=np.float32))
+            be_q.append(q)
+            now = datetime.now(timezone.utc)
+            parent_updates.append(
+                UpdateOne({"_id": ids[i]}, {"$set": {"parent_edge_id": eid, "updated_at": now}})
+            )
+            parent_updates.append(
+                UpdateOne({"_id": ids[j]}, {"$set": {"parent_edge_id": eid, "updated_at": now}})
+            )
+        cp.processed = start + len(chunk)
+    if parent_updates and not args.dry_run:
+        coll.bulk_write(parent_updates, ordered=False)
+
+    # --- 4e: L15 orphan re-entry — pair each orphan with nearest existing L15 BE ---
+    orphans = [i for i in range(n) if i not in paired]
+    n_reentry = 0
+    if orphans and be_vecs and not args.dry_run:
+        BEV = np.stack(be_vecs)
+        re_texts = []
+        re_meta: list[tuple[int, int]] = []  # (orphan_idx, be_idx)
+        for oi in orphans:
+            bi, _ = nearest_row(V[oi], BEV)
+            re_meta.append((oi, bi))
+            ant_a, syn_a = nb(words[oi])
+            re_texts.append(
+                build_l15_type_text(words[oi][0], ant_a, syn_a, words[oi][0], [], [])
+            )
+        type_vecs = embedder.embed(re_texts)
+        re_docs = []
+        for (oi, bi), tv in zip(re_meta, type_vecs, strict=True):
+            q = be_q[bi]  # inherit partner BE's q
+            bv = compute_bary_vec(V[oi], BEV[bi], tv, q)
+            re_docs.append(
+                baryedge(ids[oi], be_ids[bi], 15, bv, q, edge_type=None, type_vector=tv,
+                         source="inferred", confidence=float(q))
+            )
+        res = coll.insert_many(re_docs)
+        ups = []
+        now = datetime.now(timezone.utc)
+        for (oi, _bi), eid in zip(re_meta, res.inserted_ids, strict=True):
+            ups.append(
+                UpdateOne({"_id": ids[oi]}, {"$set": {"parent_edge_id": eid, "updated_at": now}})
+            )
+        coll.bulk_write(ups, ordered=False)
+        n_reentry = len(re_docs)
+    log.info("L15 orphan re-entry: %d orphans → %d new BEs", len(orphans), n_reentry)
+
+    cp.processed = len(pairs) + n_reentry
+    cp.total = len(pairs) + n_reentry
+    if not args.dry_run:
+        finish(cp, settings, log)
 
 
 if __name__ == "__main__":

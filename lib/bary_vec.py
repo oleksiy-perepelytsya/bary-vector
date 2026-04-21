@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 
 import numpy as np
 
 EMBED_DIM = 768
+
+# Fixed (768, 3) random projection for the word-length feature φ(W).
+# Seeded once so every run produces identical word vectors. See v0.4 §2.5.
+_rng = np.random.default_rng(42)
+LENGTH_PROJECTION = _rng.standard_normal((EMBED_DIM, 3)).astype(np.float32)
+LENGTH_PROJECTION /= np.linalg.norm(LENGTH_PROJECTION, axis=1, keepdims=True)
 
 # L14 edge-type sentences — embedded once, used as v(type). See CLAUDE.md.
 TYPE_SENTENCES: dict[str, str] = {
@@ -54,15 +61,50 @@ def compute_metabary_vec(
     return vec, q_mb
 
 
+def count_syllables(word: str) -> int:
+    """Vowel-group heuristic. Replace with pyphen if eval shows it matters."""
+    return max(1, len(re.findall(r"[aeiouAEIOU]+", word)))
+
+
+def word_length_feature(word: str, forms: Sequence[str]) -> np.ndarray:
+    """φ(W): 3-dim length signal projected into 768-dim via LENGTH_PROJECTION.
+
+    See v0.4 §2.5. Returns an L2-normalized 768-dim vector.
+    """
+    char_len = len(word)
+    syllable_ct = count_syllables(word)
+    form_lens = [len(f) for f in forms] or [char_len]
+    avg_form_len = float(np.mean(form_lens))
+    feat = np.array(
+        [
+            min(char_len / 25.0, 1.0),
+            min(syllable_ct / 10.0, 1.0),
+            min(avg_form_len / 25.0, 1.0),
+        ],
+        dtype=np.float32,
+    )
+    return normalize(LENGTH_PROJECTION @ feat)
+
+
 def word_vector(
-    be_vecs: Iterable[np.ndarray], orphan_sense_vecs: Iterable[np.ndarray]
+    be_vecs: Iterable[np.ndarray],
+    orphan_sense_vecs: Iterable[np.ndarray],
+    length_feat: np.ndarray | None = None,
+    lam: float = 0.0,
 ) -> np.ndarray:
-    """v(word) = normalize( Σ v(BE_i) + Σ v(orphan_sense_j) ). No embedding call."""
+    """v(word) = normalize( Σ v(BE_i) + Σ v(orphan_sense_j) + λ·φ(W) ).
+
+    No embedding call. ``length_feat`` / ``lam`` are optional so callers that
+    set λ=0 (or tests of the pure BE-centroid) can omit them.
+    """
     parts = [np.asarray(v, dtype=np.float32) for v in be_vecs]
     parts += [np.asarray(v, dtype=np.float32) for v in orphan_sense_vecs]
     if not parts:
         raise ValueError("word_vector requires at least one component vector")
-    return normalize(np.sum(np.stack(parts, axis=0), axis=0))
+    raw = np.sum(np.stack(parts, axis=0), axis=0)
+    if length_feat is not None and lam != 0.0:
+        raw = raw + lam * np.asarray(length_feat, dtype=np.float32)
+    return normalize(raw)
 
 
 def build_l15_type_text(
