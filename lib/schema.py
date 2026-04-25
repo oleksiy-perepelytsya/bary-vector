@@ -62,8 +62,6 @@ class ParsedWord:
     ipa: str | None = None
     forms: list[str] = field(default_factory=list)      # surface form strings only
     etymology: str = ""
-    char_len: int = 0
-    syllable_ct: int = 0
     sense_ids: list[str] = field(default_factory=list)  # ids of senses emitted
     # Word-level relations (kaikki default)
     relations: list[ParsedSenseRelation] = field(default_factory=list)

@@ -1,17 +1,10 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable, Sequence
 
 import numpy as np
 
 EMBED_DIM = 768
-
-# Fixed (768, 3) random projection for the word-length feature φ(W).
-# Seeded once so every run produces identical word vectors. See v0.4 §2.5.
-_rng = np.random.default_rng(42)
-LENGTH_PROJECTION = _rng.standard_normal((EMBED_DIM, 3)).astype(np.float32)
-LENGTH_PROJECTION /= np.linalg.norm(LENGTH_PROJECTION, axis=1, keepdims=True)
 
 # L14 edge-type sentences — embedded once, used as v(type). See CLAUDE.md.
 TYPE_SENTENCES: dict[str, str] = {
@@ -46,64 +39,54 @@ def compute_bary_vec(
     return normalize(raw)
 
 
+def level_factor(level: int, alpha: float = 0.5) -> float:
+    """Amplification factor for MetaBary accumulated_weight: 1 + α·(14 − L) / 13.
+
+    L13 → 1.0 (no boost), L1 → 1 + α (maximum). Default α = 0.5.
+    """
+    return 1.0 + alpha * (14 - level) / 13
+
+
 def compute_metabary_vec(
     v_be1: np.ndarray,
     v_be2: np.ndarray,
     v_bridge: np.ndarray,
-    q1: float,
-    q2: float,
-    q3: float,
+    w1: float,
+    w2: float,
+    w3: float,
 ) -> tuple[np.ndarray, float]:
-    """MetaBary (L13+): q_mb = q3² / sqrt(q1⁴ + q2⁴ + q3⁴); then bary_vec with q=q_mb."""
-    denom = float(np.sqrt(q1**4 + q2**4 + q3**4))
-    q_mb = (q3 * q3) / denom if denom > 0.0 else 0.0
-    vec = compute_bary_vec(v_be1, v_be2, v_bridge, q_mb)
-    return vec, q_mb
+    """MetaBary (L13+): direction uses accumulated_weights; returns (vec, q_mb_raw).
 
+    Step 1 — vector direction: normalize( w1·v_be1 + w2·v_be2 + w3·v_bridge )
+    Step 2 — q_mb_raw (Born rule): w3² / sqrt(w1⁴ + w2⁴ + w3⁴)
 
-def count_syllables(word: str) -> int:
-    """Vowel-group heuristic. Replace with pyphen if eval shows it matters."""
-    return max(1, len(re.findall(r"[aeiouAEIOU]+", word)))
-
-
-def word_length_feature(word: str, forms: Sequence[str]) -> np.ndarray:
-    """φ(W): 3-dim length signal projected into 768-dim via LENGTH_PROJECTION.
-
-    See v0.4 §2.5. Returns an L2-normalized 768-dim vector.
+    w1/w2/w3 are accumulated_weight values of the children. The caller stores
+    q_mb_raw as connection_strength and multiplies by level_factor(L) for
+    accumulated_weight.
     """
-    char_len = len(word)
-    syllable_ct = count_syllables(word)
-    form_lens = [len(f) for f in forms] or [char_len]
-    avg_form_len = float(np.mean(form_lens))
-    feat = np.array(
-        [
-            min(char_len / 25.0, 1.0),
-            min(syllable_ct / 10.0, 1.0),
-            min(avg_form_len / 25.0, 1.0),
-        ],
-        dtype=np.float32,
-    )
-    return normalize(LENGTH_PROJECTION @ feat)
+    v_be1 = np.asarray(v_be1, dtype=np.float32)
+    v_be2 = np.asarray(v_be2, dtype=np.float32)
+    v_bridge = np.asarray(v_bridge, dtype=np.float32)
+    raw = w1 * v_be1 + w2 * v_be2 + w3 * v_bridge
+    vec = normalize(raw)
+    denom = float(np.sqrt(w1**4 + w2**4 + w3**4))
+    q_mb_raw = (w3 * w3) / denom if denom > 0.0 else 0.0
+    return vec, q_mb_raw
 
 
 def word_vector(
     be_vecs: Iterable[np.ndarray],
     orphan_sense_vecs: Iterable[np.ndarray],
-    length_feat: np.ndarray | None = None,
-    lam: float = 0.0,
 ) -> np.ndarray:
-    """v(word) = normalize( Σ v(BE_i) + Σ v(orphan_sense_j) + λ·φ(W) ).
+    """v(word) = normalize( Σ v(BE_i) + Σ v(orphan_sense_j) ).
 
-    No embedding call. ``length_feat`` / ``lam`` are optional so callers that
-    set λ=0 (or tests of the pure BE-centroid) can omit them.
+    No embedding call. BE-centroid + orphan senses only — see v0.5 §2.4.
     """
     parts = [np.asarray(v, dtype=np.float32) for v in be_vecs]
     parts += [np.asarray(v, dtype=np.float32) for v in orphan_sense_vecs]
     if not parts:
         raise ValueError("word_vector requires at least one component vector")
     raw = np.sum(np.stack(parts, axis=0), axis=0)
-    if length_feat is not None and lam != 0.0:
-        raw = raw + lam * np.asarray(length_feat, dtype=np.float32)
     return normalize(raw)
 
 

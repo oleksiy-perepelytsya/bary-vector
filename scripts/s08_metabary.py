@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 import numpy as np
 from pymongo import UpdateOne
 
-from lib.bary_vec import compute_metabary_vec
+from lib.bary_vec import compute_metabary_vec, level_factor
 from lib.db import get_collection
 from lib.docs import metabary
 from lib.match import greedy_unique_match, top_k_pairs
@@ -29,13 +29,13 @@ def _load_unparented_bes(coll, level: int) -> list[dict]:
     return list(
         coll.find(
             {"doc_type": "baryedge", "level": level, "parent_edge_id": None},
-            {"_id": 1, "vector": 1, "connection_strength": 1},
+            {"_id": 1, "vector": 1, "accumulated_weight": 1},
         )
     )
 
 
 def _form_level(coll, child_level: int, bridge_level: int, threshold: float,
-                dry_run: bool) -> int:
+                alpha: float, dry_run: bool) -> int:
     """Form MetaBary at ``child_level - 2`` from children@L and bridges@L-1."""
     children = _load_unparented_bes(coll, child_level)
     bridges = _load_unparented_bes(coll, bridge_level)
@@ -71,11 +71,13 @@ def _form_level(coll, child_level: int, bridge_level: int, threshold: float,
     mb_level = child_level - 2
     docs = []
     for ci, cj, bi, _ in triads:
-        q1 = float(children[ci]["connection_strength"])
-        q2 = float(children[cj]["connection_strength"])
-        q3 = float(bridges[bi]["connection_strength"])
-        vec, q_mb = compute_metabary_vec(CV[ci], CV[cj], BV[bi], q1, q2, q3)
-        docs.append(metabary(children[ci]["_id"], children[cj]["_id"], mb_level, vec, q_mb))
+        w1 = float(children[ci]["accumulated_weight"])
+        w2 = float(children[cj]["accumulated_weight"])
+        w3 = float(bridges[bi]["accumulated_weight"])
+        vec, q_mb_raw = compute_metabary_vec(CV[ci], CV[cj], BV[bi], w1, w2, w3)
+        acc_w = q_mb_raw * level_factor(mb_level, alpha)
+        docs.append(metabary(children[ci]["_id"], children[cj]["_id"], mb_level, vec,
+                             q_mb_raw, acc_w))
     res = coll.insert_many(docs)
     now = datetime.now(timezone.utc)
     ups: list[UpdateOne] = []
@@ -91,7 +93,9 @@ def run(argv: Sequence[str] | None = None) -> None:
     settings, args, log, cp = bootstrap(STAGE, argv)
     coll = get_collection(settings)
     thr = settings.meta_bary_cos_threshold
-    log.info("start processed=%d dry_run=%s cos_threshold=%.2f", cp.processed, args.dry_run, thr)
+    alpha = settings.level_factor_alpha
+    log.info("start processed=%d dry_run=%s cos_threshold=%.2f alpha=%.2f",
+             cp.processed, args.dry_run, thr, alpha)
 
     if not args.dry_run and not args.force:
         if coll.count_documents({"doc_type": "baryedge", "level": {"$lte": 13}}, limit=1):
@@ -104,7 +108,7 @@ def run(argv: Sequence[str] | None = None) -> None:
     child_level = 15
     while child_level - 2 >= 1:
         bridge_level = child_level - 1
-        n = _form_level(coll, child_level, bridge_level, thr, args.dry_run)
+        n = _form_level(coll, child_level, bridge_level, thr, alpha, args.dry_run)
         log.info("L%d MetaBary: children@L%d bridges@L%d → %d triads",
                  child_level - 2, child_level, bridge_level, n)
         total += n

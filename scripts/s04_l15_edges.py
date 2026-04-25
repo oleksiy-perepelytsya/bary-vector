@@ -124,7 +124,8 @@ def run(argv: Sequence[str] | None = None) -> None:
         for (i, j, q), tv in zip(chunk, type_vecs, strict=True):
             bv = compute_bary_vec(V[i], V[j], tv, q)
             edge_docs.append(
-                baryedge(ids[i], ids[j], 15, bv, q, edge_type=None, type_vector=tv,
+                baryedge(ids[i], ids[j], 15, bv, q, accumulated_weight=q,
+                         edge_type=None, type_vector=tv,
                          source="inferred", confidence=float(q))
             )
             paired.add(i)
@@ -167,7 +168,8 @@ def run(argv: Sequence[str] | None = None) -> None:
             q = be_q[bi]  # inherit partner BE's q
             bv = compute_bary_vec(V[oi], BEV[bi], tv, q)
             re_docs.append(
-                baryedge(ids[oi], be_ids[bi], 15, bv, q, edge_type=None, type_vector=tv,
+                baryedge(ids[oi], be_ids[bi], 15, bv, q, accumulated_weight=q,
+                         edge_type=None, type_vector=tv,
                          source="inferred", confidence=float(q))
             )
         res = coll.insert_many(re_docs)

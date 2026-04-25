@@ -11,6 +11,7 @@ from lib.bary_vec import (
     compute_bary_vec,
     compute_metabary_vec,
     cosine,
+    level_factor,
     normalize,
     word_vector,
 )
@@ -53,10 +54,37 @@ def test_bary_vec_unit_norm():
     assert math.isclose(float(np.linalg.norm(out)), 1.0, rel_tol=1e-5)
 
 
-def test_metabary_qmb_formula():
-    _, q_mb = compute_metabary_vec(_rand(seed=1), _rand(seed=2), _rand(seed=3), 0.3, 0.4, 0.5)
+def test_metabary_qmb_raw_formula():
+    # w1/w2/w3 are accumulated_weights; q_mb_raw = w3² / sqrt(w1⁴+w2⁴+w3⁴)
+    _, q_mb_raw = compute_metabary_vec(_rand(seed=1), _rand(seed=2), _rand(seed=3), 0.3, 0.4, 0.5)
     expected = 0.5**2 / math.sqrt(0.3**4 + 0.4**4 + 0.5**4)
-    assert math.isclose(q_mb, expected, rel_tol=1e-9)
+    assert math.isclose(q_mb_raw, expected, rel_tol=1e-9)
+
+
+def test_metabary_vector_uses_individual_weights():
+    v1, v2, vb = _rand(seed=1), _rand(seed=2), _rand(seed=3)
+    w1, w2, w3 = 0.3, 0.4, 0.5
+    vec, _ = compute_metabary_vec(v1, v2, vb, w1, w2, w3)
+    expected = normalize(w1 * v1 + w2 * v2 + w3 * vb)
+    assert np.allclose(vec, expected, atol=1e-5)
+    assert math.isclose(float(np.linalg.norm(vec)), 1.0, rel_tol=1e-5)
+
+
+def test_level_factor_formula():
+    # formula: 1 + α·(14−L)/13 — L13 is minimal, L1 is maximum
+    assert math.isclose(level_factor(13, alpha=0.5), 1.0 + 0.5 * 1 / 13, rel_tol=1e-9)
+    assert math.isclose(level_factor(1, alpha=0.5), 1.5, rel_tol=1e-9)  # 1 + α at L1
+
+
+def test_level_factor_zero_alpha_is_one():
+    for lvl in range(1, 14):
+        assert math.isclose(level_factor(lvl, alpha=0.0), 1.0, rel_tol=1e-9)
+
+
+def test_level_factor_monotone_decreasing_with_level():
+    # Higher level number = lower in hierarchy = smaller factor
+    vals = [level_factor(lvl) for lvl in range(1, 14)]
+    assert vals == sorted(vals, reverse=True)
 
 
 def test_word_vector_single_be():
@@ -86,37 +114,3 @@ def test_build_l15_type_text():
     assert s.count(";") >= 1
 
 
-def test_count_syllables():
-    from lib.bary_vec import count_syllables
-    assert count_syllables("cat") == 1
-    assert count_syllables("dictionary") >= 3
-    assert count_syllables("xyz") == 1  # floor at 1
-
-
-def test_word_length_feature_shape_and_determinism():
-    from lib.bary_vec import word_length_feature
-    a = word_length_feature("cat", ["cats"])
-    b = word_length_feature("cat", ["cats"])
-    assert a.shape == (768,)
-    assert math.isclose(float(np.linalg.norm(a)), 1.0, rel_tol=1e-5)
-    assert np.allclose(a, b)
-
-
-def test_word_length_feature_separates_short_long():
-    from lib.bary_vec import cosine, word_length_feature
-    short = word_length_feature("cat", [])
-    long = word_length_feature("antidisestablishmentarianism", [])
-    # Same projection direction (3 positive features through fixed matrix) but
-    # the *raw* feature distance should be non-trivial; here we just assert
-    # they are not identical.
-    assert cosine(short, long) < 0.9999
-
-
-def test_word_vector_with_length_feature():
-    be = normalize(_rand(seed=1))
-    phi = normalize(_rand(seed=2))
-    v0 = word_vector([be], [], length_feat=phi, lam=0.0)
-    v1 = word_vector([be], [], length_feat=phi, lam=0.5)
-    assert np.allclose(v0, be, atol=1e-5)
-    assert not np.allclose(v1, be, atol=1e-3)
-    assert math.isclose(float(np.linalg.norm(v1)), 1.0, rel_tol=1e-5)

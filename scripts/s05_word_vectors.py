@@ -1,9 +1,9 @@
-"""Compute L14 word vectors from BE-centroids + orphan senses + λ·φ(W).
+"""Compute L14 word vectors from BE-centroids + orphan senses.
 
-    v(W) = normalize( Σ v(BE_i) + Σ v(orphan_sense_j) + λ·φ(W) )
+    v(W) = normalize( Σ v(BE_i) + Σ v(orphan_sense_j) )
 
 No embedding call. Strict stage boundary: depends on the *finalized* L15
-BE set from stage 04 (including orphan re-entry).
+BE set from stage 04 (including orphan re-entry). See v0.5 §2.4.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import numpy as np
 from pymongo import UpdateOne
 
 from lib import checkpoint as cp_mod
-from lib.bary_vec import word_length_feature, word_vector
+from lib.bary_vec import word_vector
 from lib.db import get_collection
 from scripts._base import bootstrap, finish
 
@@ -25,8 +25,7 @@ STAGE = "05_word_vectors"
 def run(argv: Sequence[str] | None = None) -> None:
     settings, args, log, cp = bootstrap(STAGE, argv)
     coll = get_collection(settings)
-    lam = settings.word_length_lambda
-    log.info("start processed=%d dry_run=%s λ=%.2f", cp.processed, args.dry_run, lam)
+    log.info("start processed=%d dry_run=%s", cp.processed, args.dry_run)
 
     q = {"doc_type": "node", "node_type": "word", "level": 14}
     if cp.last_id:
@@ -70,8 +69,7 @@ def run(argv: Sequence[str] | None = None) -> None:
         if not be_vecs and not orphan_vecs:
             continue  # word with zero senses (shouldn't happen post-stage-03)
 
-        phi = word_length_feature(word, props.get("forms") or [])
-        vec = word_vector(be_vecs, orphan_vecs, length_feat=phi, lam=lam)
+        vec = word_vector(be_vecs, orphan_vecs)
 
         ops.append(
             UpdateOne(

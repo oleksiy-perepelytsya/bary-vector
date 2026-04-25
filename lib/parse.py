@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from lib.bary_vec import count_syllables
 from lib.disambiguate import parse_dis1
 from lib.schema import ParsedSense, ParsedSenseRelation, ParsedWord
 
@@ -112,8 +111,6 @@ def parse_entry(obj: dict[str, Any]) -> tuple[ParsedWord, list[ParsedSense]] | N
         ipa=_extract_ipa(obj.get("sounds") or []),
         forms=forms,
         etymology=obj.get("etymology_text") or "",
-        char_len=len(word),
-        syllable_ct=count_syllables(word),
         sense_ids=[s.sense_id for s in senses],
         relations=_extract_relations(obj),
     )

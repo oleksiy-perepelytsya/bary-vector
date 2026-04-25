@@ -76,7 +76,7 @@ class Settings:
     disambig_threshold: float = 0.72           # lib.disambiguate cosine fallback
     meta_bary_cos_threshold: float = 0.90      # Stage 7: L13 triad formation
     polysemy_q_floor: float = 0.40             # open question; tune post L14
-    word_length_lambda: float = 0.15           # v0.4 §2.5 / R6: λ for φ(W) blend
+    level_factor_alpha: float = 0.5           # v0.5 R6: accumulated_weight amplification
 
     # --- L14 edge q_seeds (fermion order) ---
     q_seeds: dict[str, float] = field(default_factory=_load_q_seeds)
@@ -109,7 +109,7 @@ class Settings:
                 "META_BARY_COS_THRESHOLD", cls.meta_bary_cos_threshold
             ),
             polysemy_q_floor=_env_float("POLYSEMY_Q_FLOOR", cls.polysemy_q_floor),
-            word_length_lambda=_env_float("WORD_LENGTH_LAMBDA", cls.word_length_lambda),
+            level_factor_alpha=_env_float("LEVEL_FACTOR_ALPHA", cls.level_factor_alpha),
             q_seeds=_load_q_seeds(),
             log_level=_env_str("LOG_LEVEL", cls.log_level),
         )

@@ -16,7 +16,6 @@ def test_parse_happy_word():
     rec = next(r for r in _records() if r["word"] == "happy")
     pw, senses = parse_entry(rec)
     assert pw.word == "happy" and pw.pos == "adj"
-    assert pw.char_len == 5 and pw.syllable_ct >= 1
     assert pw.ipa == "/ˈhæpi/"
     assert len(senses) == 2
     assert all(s.embed_text for s in senses)

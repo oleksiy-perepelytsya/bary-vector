@@ -1,6 +1,6 @@
 """MongoDB document constructors for ``node`` and ``baryedge`` doc_types.
 
-Centralizing these keeps every stage producing the same v0.4 schema and
+Centralizing these keeps every stage producing the same v0.5 schema and
 makes the unique-parent / level invariants easy to audit.
 """
 
@@ -66,8 +66,6 @@ def word_node(w: ParsedWord) -> dict[str, Any]:
         "properties": {
             "word": w.word,
             "pos": w.pos,
-            "char_len": w.char_len,
-            "syllable_ct": w.syllable_ct,
             "etymology": w.etymology,
             "forms": w.forms,
             "ipa": w.ipa,
@@ -86,13 +84,15 @@ def baryedge(
     vector: np.ndarray,
     q: float,
     *,
+    accumulated_weight: float | None = None,
     edge_type: str | None = None,
     type_vector: np.ndarray | None = None,
     source: str = "inferred",
     confidence: float = 1.0,
 ) -> dict[str, Any]:
-    """L14/L15 BaryEdge. ``connection_strength`` mirrors ``q`` at these levels."""
+    """L14/L15 BaryEdge. At L14/L15 accumulated_weight = q (base case)."""
     ts = _now()
+    acc_w = accumulated_weight if accumulated_weight is not None else q
     return {
         "doc_type": "baryedge",
         "cm1_id": cm1_id,
@@ -101,6 +101,7 @@ def baryedge(
         "vector": _vec(vector),
         "parent_edge_id": None,
         "connection_strength": float(q),
+        "accumulated_weight": float(acc_w),
         "edge_type": edge_type,
         "type_vector": _vec(type_vector),
         "q": float(q),
@@ -116,9 +117,10 @@ def metabary(
     cm2_id: Any,
     level: int,
     vector: np.ndarray,
-    q_mb: float,
+    q_mb_raw: float,
+    accumulated_weight: float,
 ) -> dict[str, Any]:
-    """L≤13 MetaBary. Only structural fields — see v0.4 §6.2."""
+    """L≤13 MetaBary. connection_strength = q_mb_raw ∈ [0,1]; accumulated_weight may exceed 1."""
     ts = _now()
     return {
         "doc_type": "baryedge",
@@ -127,7 +129,8 @@ def metabary(
         "level": level,
         "vector": _vec(vector),
         "parent_edge_id": None,
-        "connection_strength": float(q_mb),
+        "connection_strength": float(q_mb_raw),
+        "accumulated_weight": float(accumulated_weight),
         "created_at": ts,
         "updated_at": ts,
     }

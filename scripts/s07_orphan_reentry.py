@@ -40,7 +40,8 @@ def run(argv: Sequence[str] | None = None) -> None:
     bes = list(
         coll.find(
             {"doc_type": "baryedge", "level": 14},
-            {"_id": 1, "vector": 1, "edge_type": 1, "type_vector": 1, "q": 1},
+            {"_id": 1, "vector": 1, "edge_type": 1, "type_vector": 1, "q": 1,
+             "accumulated_weight": 1},
         )
     )
     log.info("L14 orphans=%d existing L14 BEs=%d", len(orphans), len(bes))
@@ -60,9 +61,11 @@ def run(argv: Sequence[str] | None = None) -> None:
         partner = bes[bi]
         tv = np.asarray(partner["type_vector"], dtype=np.float32)
         q = float(partner["q"])
+        acc_w = float(partner.get("accumulated_weight", q))
         bv = compute_bary_vec(ov, BEV[bi], tv, q)
         edge_docs.append(
             baryedge(o["_id"], partner["_id"], 14, bv, q,
+                     accumulated_weight=acc_w,
                      edge_type=partner.get("edge_type"), type_vector=tv,
                      source="inferred", confidence=q)
         )

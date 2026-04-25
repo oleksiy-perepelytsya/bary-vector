@@ -90,7 +90,9 @@ def run(argv: Sequence[str] | None = None) -> None:
                     continue
                 bv = compute_bary_vec(V[i], V[cand], tv, q_seed)
                 edge_docs.append(
-                    baryedge(ids[i], ids[cand], 14, bv, q_seed, edge_type=tier.edge_type,
+                    baryedge(ids[i], ids[cand], 14, bv, q_seed,
+                             accumulated_weight=q_seed,
+                             edge_type=tier.edge_type,
                              type_vector=tv, source="ingested", confidence=1.0)
                 )
                 pair_idxs.append((i, cand))
