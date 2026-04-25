@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "barygraph": {
+      "command": "python",
+      "args": ["-m", "scripts.mcp_server"]
+    }
+  }
+}

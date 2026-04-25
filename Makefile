@@ -1,5 +1,5 @@
-.PHONY: install up up-gpu down lint test test-int pipeline fixture \
-        fetch-kaikki preflight clean-state
+.PHONY: install up up-gpu down lint test test-int pipeline pipeline-dev \
+        eval-holdout eval-recall mcp-install fixture fetch-kaikki preflight clean-state
 
 PY ?= python
 
@@ -33,6 +33,29 @@ pipeline:
 	  echo "== $$s =="; \
 	  $(PY) -m scripts.$$s || exit 1; \
 	done
+
+# Small-corpus smoke test: parse only the first 15 000 kaikki lines.
+# Useful for local end-to-end testing before committing to a full VPS run.
+pipeline-dev:
+	$(PY) -m scripts.s01_parse --limit 15000
+	$(PY) -m scripts.s02_embed
+	$(PY) -m scripts.s03_insert_nodes
+	$(PY) -m scripts.s04_l15_edges
+	$(PY) -m scripts.s05_word_vectors
+	$(PY) -m scripts.s06_l14_edges
+	$(PY) -m scripts.s07_orphan_reentry
+	$(PY) -m scripts.s08_metabary
+	$(PY) -m scripts.s10_index
+
+eval-holdout:
+	$(PY) -m scripts.eval.holdout
+
+# Use --max-pairs N to cap eval length during smoke testing.
+eval-recall:
+	$(PY) -m scripts.eval.recall
+
+mcp-install:
+	$(PY) -m pip install -e ".[mcp]"
 
 fixture:
 	$(PY) -m scripts.dev.make_fixture
