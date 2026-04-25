@@ -1,24 +1,29 @@
 # BaryGraph PoC: English Kaikki Dictionary
 ## A Local-First Proof of Concept
-**Version 0.4 · April 2026**
+**Version 0.5 · April 2026**
 
-> **v0.4 changes from v0.3:**
-> - Forest structure with unique-parent constraint (soft). Every CM has
->   at most one `parent_edge_id`. Orphans allowed.
-> - L15 `v(type)` is now per-pair: embed of both parent words' lexical
->   neighborhoods (antonyms + synonyms). Much richer than generic sentence.
-> - L14 word vectors = BE-centroid + orphan senses + word-length signal.
-> - Triadic recursion above L14: L13 MetaBary uses L14 BE as bridge,
->   L12+ is pure geometry (cosine > 0.9).
-> - Removed: `is_metabary`, `hierarchy_direction`, `common_ancestor_id`,
->   lateral MetaBary, `edge_type` above L14.
-> - Added: `parent_edge_id` on all nodes and BaryEdges.
-> - Added: word-length feature in L14 word node vector.
-> - TYPE_SENTENCES used only at L14.
-> - Fermion order for L14 matching (antonyms first, synonyms last).
-> - Removed: `strength`, `registry`, `summary_vector`, LLM summary stage.
->   The PoC is embedding-only; `bary_vec` is the sole retrieval signal.
-> - **Language: Python 3.11+ throughout.**
+> **v0.5 changes from v0.4:**
+> - Removed word-length feature φ(W) and λ entirely. Word length is a
+>   property of orthographic form, not semantic content. Register
+>   differences (e.g. "use" vs "utilization") are already captured by
+>   gloss embeddings. L14 word vector is now a clean BE-centroid + orphan
+>   senses only.
+> - MetaBary vector construction now uses children's `accumulated_weight`
+>   (not raw `q`) as pull weights, so structurally authoritative children
+>   tilt the MetaBary vector toward their semantic space.
+> - New field `accumulated_weight` on every BaryEdge and MetaBary. At
+>   L14/L15 it equals `q`. At L13 and above it equals
+>   `q_MB_raw · level_factor(L)`, compounding upward with each level.
+> - `level_factor(L) = 1 + α · (14 − L) / 13` (default α = 0.5). L13
+>   gets no boost; L1 gets maximum boost of 1 + α. `accumulated_weight`
+>   can exceed 1 above L13.
+> - `connection_strength` is preserved as raw `q` / `q_MB_raw` (always
+>   in [0,1]). `accumulated_weight` is the separate structural signal
+>   passed upward.
+> - Removed: `char_len`, `syllable_ct` from word node properties (no
+>   longer needed for vector computation).
+> - Removed: parameter R6 (λ tuning). Removed open question §19.8–9
+>   (word-length syllable counter, λ tuning).
 
 > **Level orientation:** L1 = top (most abstract), L15 = bottom (most
 > concrete sense). MetaBary climbs from L to L-2 using L-1 as bridge.
@@ -58,7 +63,7 @@ storage and vector search, and nomic-embed-text for embeddings.
 | Cross-level hierarchy via single `$graphLookup` | Forest traversal from L15 to root |
 | Sense disambiguation from `_dis1` weights | Precision of sense-level edge assignment |
 | Fermion-ordered matching preserves rare signals | Antonym edges survive synonym flood |
-| Word-length feature improves word-level retrieval | Recall split by short vs. long words |
+| Accumulated weight compounds structural authority | Higher-level MBs dominate retrieval ranking |
 
 ### 1.3 What This PoC Does Not Cover
 
@@ -79,22 +84,74 @@ bary_vec = normalize( q·v(CM₁) + q·v(CM₂) + (1−q)·v(type) )
 where `q` is connection quality (0–1) and `v(type)` is level-dependent
 (see §2.3).
 
+At L14 and L15, `accumulated_weight = q` (base case — no compounding yet).
+
 ### 2.2 MetaBary Vector (L13 and above)
 
+MetaBary construction uses two separate computations per new MetaBary:
+
+**Step 1 — vector direction** (what this MB *is*):
+
 ```
-meta_bary = normalize( q_MB·v(BE₁ᴸ) + q_MB·v(BE₂ᴸ) + (1−q_MB)·v(BEᴸ⁻¹) )
-q_MB      = q₃² / √(q₁⁴ + q₂⁴ + q₃⁴)
+meta_bary = normalize( w₁·v(BE₁) + w₂·v(BE₂) + w₃·v(bridge) )
 ```
 
-**Born rule interpretation:** `q` is amplitude, `q²` is connection
-probability. The MetaBary quality is the bridge probability measured
-against the combined probability mass of all three inputs. The L-1
-bridge (q₃) dominates — a weak bridge weakens the MetaBary regardless
-of L-level strength.
+where `w₁`, `w₂`, `w₃` are the `accumulated_weight` values of the three
+children. Children with higher structural authority pull the MetaBary
+vector toward their semantic space. After `normalize()` the magnitudes
+are discarded — only direction survives.
 
-At L13, `BE₁` and `BE₂` are L15 BaryEdges and `BEᴸ⁻¹` is the L14
-BaryEdge acting as bridge. Above L13, all three are BaryEdges/MetaBarys
-from the level below.
+**Step 2 — accumulated weight** (what this MB passes upward):
+
+```
+q_MB_raw        = w₃² / √(w₁⁴ + w₂⁴ + w₃⁴)
+level_factor(L) = 1 + α · (14 − L) / 13        # α default: 0.5
+accumulated_weight = q_MB_raw · level_factor(L)
+```
+
+**Born rule interpretation:** `w` is amplitude, `w²` is connection
+probability. `q_MB_raw` is the bridge probability measured against the
+combined probability mass of all three inputs. The bridge (`w₃`) dominates
+— a weak bridge weakens the MetaBary regardless of BE₁/BE₂ strength.
+`level_factor` then amplifies this raw quality by how high in the
+hierarchy the MetaBary sits.
+
+**Role separation:**
+
+| Role | Consumes | Produces |
+|---|---|---|
+| Vector direction | children's `accumulated_weight` as pull weights | direction only — magnitude discarded by normalize |
+| `accumulated_weight` | children's `accumulated_weight` + `level_factor(L)` | scalar stored on this MB, passed to parent level |
+
+The chain is clean: L15 `q` seeds the base case; each level up consumes
+what the level below stored, never reaching back further.
+
+**Level factor table (α = 0.5):**
+
+| Level | level_factor | Effect |
+|---|---|---|
+| L13 | 1.00 | No boost — just formed |
+| L11 | 1.15 | Mild boost |
+| L9  | 1.31 | Moderate |
+| L7  | 1.46 | Strong |
+| L5  | 1.62 | Very strong |
+| L3  | 1.77 | Near-maximum |
+| L1  | 1.50 | Maximum (1 + α) |
+
+`accumulated_weight` can exceed 1.0 above L13. This is intentional —
+it encodes structural authority that has compounded through multiple
+rounds of triadic selection.
+
+**At L13 specifically** (`BE₁`, `BE₂` are L15 BEs, bridge is L14 BE):
+
+```
+w₁ = be1.accumulated_weight   # = be1.q  (L15 base case)
+w₂ = be2.accumulated_weight   # = be2.q  (L15 base case)
+w₃ = bridge.accumulated_weight  # = bridge.q  (L14 base case)
+```
+
+Above L13, all three children are MetaBarys whose `accumulated_weight`
+may already exceed 1.
 
 ### 2.3 v(type) Construction
 
@@ -138,17 +195,15 @@ Above L14, the bridge BaryEdge's vector serves directly as the third
 component. No embedding call. The bridge already encodes relational
 information from the levels below.
 
-### 2.4 Word Vector (L14) with Length Feature
+### 2.4 Word Vector (L14)
 
 ```
-v(word_W) = normalize( Σᵢ v(BE_i) + Σⱼ v(sense_j) + λ · φ(W) )
+v(word_W) = normalize( Σᵢ v(BE_i) + Σⱼ v(sense_j) )
 ```
 
 where:
 - `BE_i` are L15 BaryEdges in which one of W's senses participates
 - `sense_j` are orphan senses of W that found no partner at L15
-- `φ(W)` is the word-length feature vector (see §2.5)
-- `λ` is a tunable blend weight (default: 0.15)
 
 **Why BE-centroid, not sense-centroid:**
 Each L15 BE vector already encodes three signals — both senses plus the
@@ -161,62 +216,6 @@ L15 BEs at L13 triad formation.
 **Dependency:** L14 word vectors cannot be computed until all L15 BEs
 are finalized (including orphan re-entry). Strict stage boundary.
 
-### 2.5 Word-Length Feature φ(W)
-
-Word length is a genuine psycholinguistic property: reading difficulty,
-processing time, recall, and Zipf's law familiarity all correlate with
-length. Short words tend to be more common, more abstract, and more
-semantically central. Long words tend to be domain-specific, rarer, and
-more precisely defined.
-
-The feature vector `φ(W)` encodes three length signals:
-
-```python
-import numpy as np
-
-def word_length_feature(word: str, forms: list[str]) -> np.ndarray:
-    char_len    = len(word)                          # character count
-    syllable_ct = count_syllables(word)              # estimated syllable count
-    avg_form_len = np.mean([len(f) for f in forms])  # avg inflected form length
-
-    # Normalize to [0, 1] using empirical English ranges
-    # char_len: typical 1–20, cap at 25
-    # syllable_ct: typical 1–8, cap at 10
-    # avg_form_len: similar to char_len
-    feat = np.array([
-        min(char_len / 25.0, 1.0),
-        min(syllable_ct / 10.0, 1.0),
-        min(avg_form_len / 25.0, 1.0),
-    ], dtype=np.float32)
-
-    # Embed as a 768-dim vector by projecting through a fixed random matrix
-    # seeded once at startup — same projection used across all words
-    return LENGTH_PROJECTION @ feat   # shape (768,), pre-normalized
-
-def count_syllables(word: str) -> int:
-    """Simple vowel-group count. Replace with pyphen for accuracy."""
-    import re
-    return max(1, len(re.findall(r'[aeiouAEIOU]+', word)))
-```
-
-`LENGTH_PROJECTION` is a fixed (768, 3) random normal matrix, normalized
-per row, initialized once with `np.random.seed(42)`. It maps the 3-dim
-feature into the same 768-dim space as the embedding vectors without
-requiring an additional embedding call.
-
-**What this encodes:**
-- `"cat"` (3 chars, 1 syllable) → short-word region
-- `"dictionary"` (10 chars, 4 syllables) → medium-word region
-- `"antidisestablishmentarianism"` (28 chars, 12 syllables) → long-word region
-
-The length feature ensures two words with near-identical sense semantics
-but very different lengths (e.g. "use" vs. "utilization") are not
-collapsed to the same vector at L14, preserving the register difference
-that length encodes.
-
-**λ tuning:** start at 0.15. If eval shows length signal hurts retrieval,
-set λ = 0. If it helps, tune upward. Tracked as parameter R6 in §12.
-
 ---
 
 ## 3. Invariants
@@ -228,8 +227,11 @@ set λ = 0. If it helps, tune upward. Tracked as parameter R6 in §12.
    BEs outside triads.
 3. **Forest structure** — single `$graphLookup` climbs to root.
 4. **BE and MetaBary interchangeable above L14** — same doc type, same role.
-5. **Algebraically closed** — everything is
-   `normalize(q·a + q·b + (1−q)·c)`, recursive.
+5. **Algebraically closed** — vector construction is always
+   `normalize(w₁·a + w₂·b + w₃·c)`, recursive. At L14/L15, `w = q`.
+   Above L13, `w = accumulated_weight`.
+6. **`connection_strength` always in [0,1].** `accumulated_weight` may
+   exceed 1 above L13 — these are distinct fields with distinct roles.
 
 ---
 
@@ -356,20 +358,18 @@ Single collection `barygraph`. Two document types: `node`, `baryedge`.
 | node_type | level | key properties | vector source |
 |---|---|---|---|
 | `sense` | 15 | word, pos, sense_id, sense_idx, gloss, examples, tags, topics, wikidata | embed(gloss + examples[:2]) |
-| `word` | 14 | word, pos, char_len, syllable_ct, etymology, forms, ipa | BE-centroid + orphan senses + λ·φ(W) |
+| `word` | 14 | word, pos, etymology, forms, ipa | BE-centroid + orphan senses |
 | `synset` | 10–12 | hypernym, member_count | cluster centroid |
 | `field` | 7–9 | name, pos_group | cluster centroid |
 | `register` | 4–6 | name, tag — **may collapse to L7** | cluster centroid |
 | `stub` | any | word, reason — no vector | none |
 
-**Word node `properties` includes length fields:**
+**Word node `properties`:**
 
 ```python
 'properties': {
     'word':        'dictionary',
     'pos':         'noun',
-    'char_len':    10,              # len(word)
-    'syllable_ct': 4,               # count_syllables(word)
     'etymology':   'From Middle English dixionare...',
     'forms':       ['dictionaries'],
     'ipa':         '/ˈdɪk.ʃə.nə.ɹi/',
@@ -380,22 +380,24 @@ Single collection `barygraph`. Two document types: `node`, `baryedge`.
 
 ```python
 {
-    '_id':               ObjectId(),
-    'doc_type':          'baryedge',
-    'cm1_id':            ObjectId(),   # → node (L14/L15) or baryedge (L≤13)
-    'cm2_id':            ObjectId(),   # → node (L14/L15) or baryedge (L≤13)
-    'level':             int,          # same as CMs at L14/L15;
-                                       # = cm1.level - 2 for MetaBary (L≤13)
-    'vector':            list[float],  # bary_vec — algebraic
-    'parent_edge_id':    ObjectId() | None,  # ≤1 parent; always → baryedge; None = orphan
-    'connection_strength': float,      # q (base) or q_MB (rescaled)
+    '_id':                ObjectId(),
+    'doc_type':           'baryedge',
+    'cm1_id':             ObjectId(),   # → node (L14/L15) or baryedge (L≤13)
+    'cm2_id':             ObjectId(),   # → node (L14/L15) or baryedge (L≤13)
+    'level':              int,          # same as CMs at L14/L15;
+                                        # = cm1.level - 2 for MetaBary (L≤13)
+    'vector':             list[float],  # bary_vec — algebraic
+    'parent_edge_id':     ObjectId() | None,  # ≤1 parent; always → baryedge; None = orphan
+    'connection_strength': float,       # q (L14/L15) or q_MB_raw (L≤13); always in [0,1]
+    'accumulated_weight': float,        # = q at L14/L15; = q_MB_raw·level_factor at L≤13
+                                        # may exceed 1 above L13; passed to parent level
 
     # L14/L15 ONLY:
-    'edge_type':         str | None,   # kaikki relation (L14) or None (L15 cosine-matched)
-    'type_vector':       list[float],  # v(type) — per-pair embed (L15) or TYPE_SENTENCES (L14)
-    'q':                 float,        # 0–1
-    'source':            str,          # 'ingested' | 'inferred' | 'manual' | 'placeholder'
-    'confidence':        float,
+    'edge_type':          str | None,   # kaikki relation (L14) or None (L15 cosine-matched)
+    'type_vector':        list[float],  # v(type) — per-pair embed (L15) or TYPE_SENTENCES (L14)
+    'q':                  float,        # 0–1
+    'source':             str,          # 'ingested' | 'inferred' | 'manual' | 'placeholder'
+    'confidence':         float,
 
     # ABSENT above L14:
     # edge_type, type_vector, q, source, confidence
@@ -483,7 +485,6 @@ raw cosine is low.
 
 - Insert L15 sense nodes into MongoDB
 - Insert L14 word nodes with placeholder vectors (updated in Stage 5)
-- Compute and store `char_len`, `syllable_ct` on word nodes
 
 ### Stage 4 — L15 BE Formation (cosine-driven)
 
@@ -492,7 +493,7 @@ raw cosine is low.
 4b. Greedy match: highest cosine first, skip already-paired
 4c. For each pair: build type_text (parent words + antonyms + synonyms),
     batch-embed → v(type)
-4d. Compute bary_vec, set parent_edge_id on both senses
+4d. Compute bary_vec, set q, set accumulated_weight = q, set parent_edge_id
 4e. Orphan re-entry: unpaired senses match with existing L15 BEs
 ```
 
@@ -505,11 +506,9 @@ per sense, then greedy match from ranked pairs.
 
 ```python
 for word_node in word_nodes:
-    be_vecs = [be['vector'] for be in get_baryedges_for_word(word_node)]
+    be_vecs     = [be['vector'] for be in get_baryedges_for_word(word_node)]
     orphan_vecs = [s['vector'] for s in get_orphan_senses(word_node)]
-    length_feat = word_length_feature(word_node['properties']['word'],
-                                      word_node['properties']['forms'])
-    raw = sum(be_vecs + orphan_vecs) + LAMBDA * length_feat
+    raw = sum(be_vecs + orphan_vecs)
     word_node['vector'] = normalize(raw)
 ```
 
@@ -521,12 +520,13 @@ No embedding call. Strict stage boundary — runs after L15 BE formation.
 6a. Iterate kaikki relations in fermion order (§7.1)
 6b. Skip words already paired at this priority tier
 6c. v(type) = embed(TYPE_SENTENCES[edge_type])
-6d. Compute bary_vec, set parent_edge_id
+6d. Compute bary_vec, set q, set accumulated_weight = q, set parent_edge_id
 ```
 
-L14 orphan re-entry (`s07_orphan_reentry.py`): each unpaired word
+L14 orphan re-entry (`s06_orphan_reentry.py`): each unpaired word
 matches the nearest existing L14 BE; new BE inherits that partner's
-`edge_type`, `type_vector`, and `q` (no new embedding call).
+`edge_type`, `type_vector`, `q`, and `accumulated_weight` (no new
+embedding call).
 
 ### Stage 7 — L13 MetaBary (polysemy bridge)
 
@@ -534,12 +534,31 @@ For each L14 BE (bridge), find two unparented L15 BEs with mutual
 `cos > 0.9`:
 
 ```python
-def q_mb(q1: float, q2: float, q3: float) -> float:
-    """Born rule MetaBary quality. q3 = bridge (L14), dominates."""
-    return q3**2 / (q1**4 + q2**4 + q3**4) ** 0.5
+ALPHA = 0.5  # level_factor tuning parameter
 
-v_l13 = normalize(q * v_be1 + q * v_be2 + (1 - q) * v_bridge)
-# where q = q_mb(q_be1, q_be2, q_bridge)
+def level_factor(level: int) -> float:
+    return 1.0 + ALPHA * (14 - level) / 13
+
+def compute_metabary(be1: dict, be2: dict, bridge: dict, level: int) -> dict:
+    w1 = be1['accumulated_weight']
+    w2 = be2['accumulated_weight']
+    w3 = bridge['accumulated_weight']
+
+    # Vector direction: pull toward highest-authority children
+    raw_vec = w1 * be1['vector'] + w2 * be2['vector'] + w3 * bridge['vector']
+    bary_vec = normalize(raw_vec)
+
+    # Accumulated weight: Born rule + level amplification
+    q_mb_raw = w3**2 / (w1**4 + w2**4 + w3**4) ** 0.5
+    acc_w    = q_mb_raw * level_factor(level)
+
+    return {
+        'vector':             bary_vec,
+        'connection_strength': q_mb_raw,   # always in [0,1]
+        'accumulated_weight': acc_w,        # may exceed 1 above L13
+        'level':              level,
+        ...
+    }
 ```
 
 Example polysemy triad:
@@ -561,14 +580,16 @@ while True:
         candidates = find_unparented_bes_near(bridge, level=current_level, threshold=0.9)
         if len(candidates) >= 2:
             be1, be2 = candidates[:2]
-            create_metabary(be1, be2, bridge, level=current_level - 2)
+            mb = compute_metabary(be1, be2, bridge, level=current_level - 2)
+            insert_metabary(mb)
             new_triads += 1
     if new_triads == 0:
         break
     current_level -= 2
 ```
 
-Pure geometry — no kaikki, no TYPE_SENTENCES.
+Pure geometry — no kaikki, no TYPE_SENTENCES. `accumulated_weight`
+compounds at each level via `level_factor`.
 
 ### Stage 9 — Index
 
@@ -688,7 +709,8 @@ needed. Single `$graphLookup` walks from any node to root.
 | Hierarchy correctness | Forest paths vs. `topics[]` / `categories[]` |
 | Fermion order impact | Recall with/without antonym-first priority |
 | Orphan rate per level | Track % of CMs with parent_edge_id = None |
-| Word-length signal | Recall@20 split by short (≤4 chars) vs long (≥9 chars) words |
+| Accumulated weight distribution | Histogram of `accumulated_weight` per level; verify compounding |
+| α sensitivity | Recall@20 at α ∈ {0.0, 0.25, 0.5, 1.0} |
 
 ---
 
@@ -701,7 +723,7 @@ needed. Single `$graphLookup` walks from any node to root.
 | R3 | L15 orphan v(type) | embed(orphan's word neighborhood only) | One-sided but consistent |
 | R4 | Antonym/synonym _dis1 filtering | No filtering initially | Simpler; revisit if eval shows noise |
 | R5 | L15 matching threshold | 0.72 | Below this, sense remains orphan |
-| R6 | Word-length blend weight λ | 0.15 | Small contribution; set to 0 if eval shows no benefit |
+| R6 | Level factor α | 0.5 | L1 MB gets 1.5× raw q_MB; tune from secondary eval |
 
 ---
 
@@ -723,9 +745,9 @@ Cost: zero (all open-source).
 
 ---
 
-## 14. Deviations From Parent Spec (BaryGraph v1.1)
+## 14. Deviations From Parent Spec (BaryGraph v1.2)
 
-| v1.1 Section | Deviation | Reason |
+| v1.2 Section | Deviation | Reason |
 |---|---|---|
 | §4.2 — pairwise cosine scan all levels | Explicit-relation seeding at L14/L15 | O(n²) infeasible |
 | §7 — MongoDB Atlas | Community + mongot | Local-first PoC |
@@ -734,26 +756,35 @@ Cost: zero (all open-source).
 | All relations at sense level | Word-level with `_dis1`/cosine disambiguation | Actual kaikki structure |
 | Lateral MetaBary | Eliminated | Forest structure with unique-parent |
 | `is_metabary` flag | Eliminated | Redundant — level > 14 implies MetaBary |
-| Word vectors = sense centroid | BE-centroid + orphan senses + length feature | Carries relational + psycholinguistic info |
+| Word vectors = sense centroid | BE-centroid + orphan senses | Carries relational information from all pairings |
 | `registry.summary` / `summary_vector` | Dropped | PoC is embedding-only |
+| Uniform q in MetaBary formula | `accumulated_weight` compounds per level | Structural authority should grow with hierarchy depth |
 
 ---
 
-## 15. What v0.4 Gains Over v0.3
+## 15. What v0.5 Gains Over v0.4
 
-- **Algebraically closed model** — everything is `normalize(q·a + q·b + (1−q)·c)`, recursive.
-- **Forest structure** — trivial hierarchy queries, no cycle handling.
-- **Embedding-only pipeline** — no LLM dependency, fully deterministic.
-- **Context-rich v(type) at L15** without LLM calls in the hot path.
-- **Bootstrap chain:** sense → L15 BE → word vector → L14 BE → L13 MB → … each stage feeds the next with increasingly structured signal.
-- **Fermion order** preserves rare, high-value signals (antonyms) that would otherwise be lost in synonym flood.
-- **Word-length feature** encodes psycholinguistic register difference at L14.
+- **Cleaner word vector.** Removing φ(W) and λ eliminates a spurious
+  signal. "use" and "utilization" differ in their gloss embeddings
+  already — no orthographic proxy needed.
+- **Structurally weighted MetaBary vector.** Children with higher
+  `accumulated_weight` pull the MB vector toward their semantic space.
+  A bridge that has survived multiple levels of triadic selection
+  dominates a freshly-formed L15 BE in the same triad.
+- **Compounding authority.** `accumulated_weight` grows multiplicatively
+  as the graph climbs. A MetaBary at L5 carries measurably more
+  structural authority than one at L13, encoded directly in the scalar
+  passed upward.
+- **Two-field separation.** `connection_strength` stays in [0,1] for
+  interpretability. `accumulated_weight` is the structural propagation
+  signal and may exceed 1 — the two are never conflated.
 
-## 16. What v0.4 Costs vs v0.3
+## 16. What v0.5 Costs vs v0.4
 
-- **Sparser coverage.** Unique-parent + soft-orphan means many kaikki relations produce no BE.
-- **Second embedding pass at L15** for per-pair v(type) (~1–2M extra embeddings).
-- **Sequential matching** — fermion order within a level cannot be fully parallelized.
+- **`accumulated_weight` must be stored and fetched** for every child
+  at MetaBary formation time. One extra field read per triad — negligible.
+- **α is a new tuning parameter** (R6). Default 0.5 is reasonable but
+  requires A/B validation in secondary eval.
 
 ---
 
@@ -764,7 +795,7 @@ Cost: zero (all open-source).
 3. **Orphan re-entry asymmetry.** Orphan sense paired with existing BE creates structurally asymmetric children. Algebraically fine, but needs a fresh v(type) embed call.
 4. **L13 candidate search ambiguity.** Children must be near each other (cos > 0.9 mutual); bridge initiates search but doesn't constrain their mutual similarity.
 5. **Sparsity above L12.** Each level roughly halves the node count with cos > 0.9 + unique-parent. Graph may top out before L1.
-6. **Word-length feature dimensionality.** φ(W) is projected into 768-dim via fixed random matrix — verify projection preserves relative distances on a sample before ingestion.
+6. **`accumulated_weight` scale drift.** With α = 0.5, a chain of strong MBs from L13 to L1 could reach `accumulated_weight` ~ 1.5⁶ ≈ 11. Verify distribution in secondary eval; cap if needed.
 
 ---
 
@@ -779,7 +810,8 @@ Cost: zero (all open-source).
 | Targets not in dump | Medium | Stub nodes; exclude from eval |
 | Unique-parent too sparse | Medium | Track orphan rate; relax if >60% orphan |
 | L15 ANN quality | Low | Verify recall vs brute-force on 10K sample |
-| Word-length feature hurts retrieval | Low | λ = 0 to disable; A/B in secondary eval |
+| `accumulated_weight` scale drift | Low | Histogram per level in secondary eval; cap at ceiling if needed |
+| α = 0.5 suboptimal | Low | A/B at α ∈ {0.0, 0.25, 0.5, 1.0}; R6 in §12 |
 
 ---
 
@@ -792,8 +824,8 @@ Cost: zero (all open-source).
 5. **MetaBary stopping criterion** — "no triads form" (natural) or hard cap?
 6. **Stub promotion** — inline in stage 4 or separate pass?
 7. **Antonym/synonym _dis1 filtering for v(type)** — revisit if L15 eval noisy
-8. **Word-length syllable counter** — simple vowel-group heuristic sufficient, or use pyphen?
-9. **λ tuning** — 0.15 default; tune from secondary eval (R6)
+8. **`accumulated_weight` ceiling** — should a hard cap be applied to prevent scale drift above L7?
+9. **α tuning** — 0.5 default; tune from secondary eval (R6)
 
 ---
 
@@ -806,4 +838,4 @@ Cost: zero (all open-source).
 
 ---
 
-*BaryGraph Kaikki PoC v0.4 · CM Theory Project · April 2026*
+*BaryGraph Kaikki PoC v0.5 · CM Theory Project · April 2026*
