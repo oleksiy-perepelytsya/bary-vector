@@ -16,6 +16,7 @@ dependencies = [
   "python-dotenv>=1.0",
   "tqdm>=4.66",
   "orjson>=3.9",
+  "hnswlib>=0.8",
 ]
 
 [project.optional-dependencies]

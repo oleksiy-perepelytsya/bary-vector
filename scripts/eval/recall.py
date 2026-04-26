@@ -73,7 +73,7 @@ def run() -> None:
 
     bary_hits = flat_hits = 0
 
-    for i, (pair, qv) in enumerate(zip(pairs, query_vecs)):
+    for i, (pair, qv) in enumerate(zip(pairs, query_vecs, strict=True)):
         word_b = pair["word_b"]
         qv_list = qv.tolist()
 

@@ -22,7 +22,7 @@ from mcp.server.fastmcp import FastMCP
 from pymongo.errors import OperationFailure
 
 from lib.config import Settings
-from lib.db import any_cm_has_word, cm_leaf_words, get_collection, vector_search
+from lib.db import cm_leaf_words, get_collection, vector_search
 from lib.embed import get_embedder
 from lib.log import setup_logging
 
@@ -239,7 +239,7 @@ def graph_stats() -> str:
 
     Use this to check how much data has been ingested and what stages have run.
     """
-    pipeline = [
+    pipeline: list[dict[str, Any]] = [
         {"$group": {
             "_id": {
                 "doc_type": "$doc_type",

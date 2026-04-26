@@ -24,6 +24,13 @@ services:
       - "11434:11434"
     volumes:
       - ollama_models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     profiles: ["gpu"]
 
 volumes:

@@ -61,13 +61,19 @@ def run(argv: Sequence[str] | None = None) -> None:
                 break
             texts = [rec["embed_text"] for rec in batch]
             vecs = embedder.embed(texts)
+            lines: list[bytes] = []
             for rec, v in zip(batch, vecs, strict=True):
                 n += 1
                 if n <= skip:
                     continue
                 rec["vector"] = v.tolist()
-                if not args.dry_run:
-                    out.write(orjson.dumps(rec) + b"\n")
+                lines.append(orjson.dumps(rec) + b"\n")
+            # Write whole batch atomically then save checkpoint — a crash
+            # between these two leaves at most one batch of duplicates, which
+            # stage 03 deduplicates via upsert on sense_id.
+            if lines and not args.dry_run:
+                out.write(b"".join(lines))
+                out.flush()
             cp.processed = n
             cp_mod.save(cp, settings)
             if n % (batch_n * 50) == 0:
