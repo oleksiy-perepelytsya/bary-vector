@@ -16,8 +16,8 @@
 
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/oleksiy-perepelytsya/barygraph-kaikki.git}"
-PROJECT_DIR="${PROJECT_DIR:-$HOME/barygraph-kaikki}"
+REPO_URL="${REPO_URL:-https://github.com/oleksiy-perepelytsya/bary-vector.git}"
+PROJECT_DIR="${PROJECT_DIR:-$HOME/bary-vector}"
 OLLAMA_MODEL="${OLLAMA_MODEL:-nomic-embed-text:v1.5}"
 DATA_DISK="${DATA_DISK:-/dev/sdb}"
 DATA_MOUNT="${DATA_MOUNT:-/mnt/data}"
@@ -43,11 +43,11 @@ if [[ -b "$DATA_DISK" ]]; then
     _info "Data disk: $DATA_DISK → $DATA_MOUNT"
 
     # Format only if blank (no filesystem signature)
-    if ! blkid "$DATA_DISK" &>/dev/null; then
+    if ! sudo blkid "$DATA_DISK" &>/dev/null; then
         _info "Formatting $DATA_DISK as ext4"
         sudo mkfs.ext4 -F -L barygraph-data "$DATA_DISK"
     else
-        _ok "$DATA_DISK already formatted ($(blkid -s TYPE -o value "$DATA_DISK"))"
+        _ok "$DATA_DISK already formatted ($(sudo blkid -s TYPE -o value "$DATA_DISK"))"
     fi
 
     # Mount
@@ -71,6 +71,7 @@ if [[ -b "$DATA_DISK" ]]; then
     DOCKER_ROOT="$DATA_MOUNT/docker"
     sudo mkdir -p "$DOCKER_ROOT"
     DAEMON_JSON=/etc/docker/daemon.json
+    sudo mkdir -p /etc/docker
     if ! sudo test -f "$DAEMON_JSON" || ! sudo grep -q "data-root" "$DAEMON_JSON"; then
         echo "{\"data-root\": \"$DOCKER_ROOT\"}" | sudo tee "$DAEMON_JSON"
         _ok "Docker data-root → $DOCKER_ROOT"
@@ -97,7 +98,23 @@ fi
 sudo systemctl restart docker
 sleep 2
 
-# ── 4. NVIDIA container toolkit (skip if no GPU detected) ────────────────────
+# ── 4. NVIDIA drivers + container toolkit ────────────────────────────────────
+# Install drivers first if GPU hardware is present but nvidia-smi is missing.
+# This requires a reboot — the script exits here; re-run after rebooting.
+if lspci | grep -qi nvidia && ! nvidia-smi &>/dev/null 2>&1; then
+    _info "NVIDIA GPU hardware found but drivers missing — installing"
+    curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb \
+        -o /tmp/cuda-keyring.deb
+    sudo dpkg -i /tmp/cuda-keyring.deb
+    sudo apt-get update -qq
+    sudo apt-get install -y cuda-drivers
+    _ok "NVIDIA drivers installed"
+    _warn "Reboot required. Run:"
+    _warn "  gcloud compute ssh ... -- 'sudo reboot'"
+    _warn "Then re-run this script — it will resume from this point."
+    exit 0
+fi
+
 if nvidia-smi &>/dev/null; then
     _info "NVIDIA GPU detected"
     nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
