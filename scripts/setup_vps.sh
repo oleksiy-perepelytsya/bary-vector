@@ -78,7 +78,19 @@ if [[ -b "$DATA_DISK" ]]; then
     else
         _ok "Docker data-root already configured"
     fi
-    sudo chown -R root:root "$DOCKER_ROOT"
+    # containerd stores image layers separately from Docker data-root.
+    # Symlink /var/lib/containerd to the data disk so images don't fill the boot disk.
+    CONTAINERD_ROOT="$DATA_MOUNT/containerd"
+    sudo mkdir -p "$CONTAINERD_ROOT"
+    if [[ ! -L /var/lib/containerd ]]; then
+        sudo systemctl stop docker containerd 2>/dev/null || true
+        sudo rm -rf /var/lib/containerd
+        sudo ln -s "$CONTAINERD_ROOT" /var/lib/containerd
+        sudo systemctl start containerd docker
+        _ok "containerd → $CONTAINERD_ROOT (symlink)"
+    else
+        _ok "containerd symlink already configured"
+    fi
 else
     _warn "Data disk $DATA_DISK not found — using boot disk (not recommended)."
     _warn "Pass DATA_DISK=/dev/sdX if your disk has a different name."
@@ -107,7 +119,7 @@ if lspci | grep -qi nvidia && ! nvidia-smi &>/dev/null 2>&1; then
         -o /tmp/cuda-keyring.deb
     sudo dpkg -i /tmp/cuda-keyring.deb
     sudo apt-get update -qq
-    sudo apt-get install -y cuda-drivers
+    sudo apt-get install -y linux-headers-"$(uname -r)" cuda-drivers
     _ok "NVIDIA drivers installed"
     _warn "Reboot required. Run:"
     _warn "  gcloud compute ssh ... -- 'sudo reboot'"
@@ -149,7 +161,7 @@ cd "$PROJECT_DIR"
 
 # ── 6. Python dependencies ───────────────────────────────────────────────────
 _info "Python dependencies"
-python3.11 -m pip install -q -e ".[dev,mcp]"
+python3.11 -m pip install -q --break-system-packages -e ".[dev,mcp]"
 _ok "Python deps installed"
 
 # ── 7. .env ──────────────────────────────────────────────────────────────────
@@ -194,7 +206,7 @@ for i in $(seq 1 12); do
 done
 curl -sf http://localhost:11434/api/tags &>/dev/null \
     || _die "Ollama did not start within 60s"
-ollama pull "$OLLAMA_MODEL"
+docker exec barygraph-ollama ollama pull "$OLLAMA_MODEL"
 _ok "Model $OLLAMA_MODEL ready"
 
 # ── 10. kaikki data ──────────────────────────────────────────────────────────

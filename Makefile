@@ -1,7 +1,7 @@
 .PHONY: install up up-gpu down lint test test-int pipeline pipeline-dev \
         eval-holdout eval-recall mcp-install fixture fetch-kaikki preflight clean-state
 
-PY ?= python
+PY ?= python3
 
 install:
 	$(PY) -m pip install -e ".[dev]"
