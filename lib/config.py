@@ -59,7 +59,7 @@ class Settings:
     ollama_url: str = "http://localhost:11434"
     embed_model: str = "nomic-embed-text:v1.5"
     embed_dim: int = 768
-    embed_timeout_seconds: float = 120.0
+    embed_timeout_seconds: float = 600.0
     fake_embed: bool = False
 
     # --- Data / state ---
@@ -69,7 +69,7 @@ class Settings:
 
     # --- Batching ---
     batch_size: int = 512          # generic ingest / bulk-write batch
-    embed_batch_size: int = 64     # tokens-per-request cap for the embedder
+    embed_batch_size: int = 16     # texts-per-request to Ollama (CPU-safe)
 
     # --- Tunable thresholds (pipeline) ---
     q_min_l15: float = 0.72                    # Stage 3b greedy-match floor

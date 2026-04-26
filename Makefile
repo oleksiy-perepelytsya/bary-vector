@@ -13,7 +13,7 @@ up-gpu:
 	docker compose --profile gpu up -d
 
 down:
-	docker compose down
+	docker compose --profile gpu down --remove-orphans
 
 lint:
 	ruff check .

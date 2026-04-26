@@ -114,7 +114,7 @@ def run(argv: Sequence[str] | None = None) -> None:
         total += n
         if n == 0:
             break
-        child_level -= 2
+        child_level -= 1
 
     cp.processed = total
     cp.total = total
