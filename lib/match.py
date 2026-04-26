@@ -44,6 +44,7 @@ ANN_THRESHOLD: int = int(os.environ.get("ANN_THRESHOLD", 20_000))
 ANN_K: int = int(os.environ.get("ANN_K", 50))
 ANN_EF: int = int(os.environ.get("ANN_EF", 100))
 ANN_M: int = int(os.environ.get("ANN_M", 16))
+ANN_EF_CONSTRUCTION: int = int(os.environ.get("ANN_EF_CONSTRUCTION", 100))
 
 
 def top_k_pairs(vectors: np.ndarray, k: int | None = None) -> Iterable[tuple[int, int, float]]:
@@ -87,7 +88,7 @@ def _ann_pairs(vectors: np.ndarray, k: int | None) -> Iterable[tuple[int, int, f
     ef = max(ANN_EF, nn_k)
 
     index = hnswlib.Index(space="cosine", dim=dim)
-    index.init_index(max_elements=n, ef_construction=200, M=ANN_M)
+    index.init_index(max_elements=n, ef_construction=ANN_EF_CONSTRUCTION, M=ANN_M)
     index.add_items(vectors, list(range(n)))
     index.set_ef(ef)
 
