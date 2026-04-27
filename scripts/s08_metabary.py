@@ -25,24 +25,30 @@ from scripts._base import bootstrap, finish
 STAGE = "08_metabary"
 
 
-def _load_unparented_bes(coll, level: int) -> list[dict]:
-    return list(
-        coll.find(
-            {"doc_type": "baryedge", "level": level, "parent_edge_id": None},
-            {"_id": 1, "vector": 1, "accumulated_weight": 1},
-        )
-    )
+def _load_unparented_bes(coll, level: int) -> tuple[list, list[dict], np.ndarray]:
+    """Return (ids, meta_list, V) for unparented BEs at level, streaming into pre-alloc numpy."""
+    ids: list = []
+    meta: list[dict] = []
+    V = np.empty((1_000_000, 768), dtype=np.float32)
+    for i, doc in enumerate(coll.find(
+        {"doc_type": "baryedge", "level": level, "parent_edge_id": None},
+        {"_id": 1, "vector": 1, "accumulated_weight": 1},
+    )):
+        ids.append(doc["_id"])
+        meta.append({"_id": doc["_id"], "accumulated_weight": doc["accumulated_weight"]})
+        V[i] = doc["vector"]
+    n = len(ids)
+    return ids, meta, V[:n]
 
 
 def _form_level(coll, child_level: int, bridge_level: int, threshold: float,
                 alpha: float, dry_run: bool) -> int:
     """Form MetaBary at ``child_level - 2`` from children@L and bridges@L-1."""
-    children = _load_unparented_bes(coll, child_level)
-    bridges = _load_unparented_bes(coll, bridge_level)
-    if len(children) < 2 or not bridges:
+    child_ids, child_meta, CV = _load_unparented_bes(coll, child_level)
+    bridge_ids, bridge_meta, BV = _load_unparented_bes(coll, bridge_level)
+    if len(child_ids) < 2 or not bridge_ids:
         return 0
 
-    CV = np.asarray([c["vector"] for c in children], dtype=np.float32)
     # 1. Greedy mutual-cosine matching among children (similarity is between
     #    the two children, NOT bridge↔child — see CLAUDE.md Stage 7).
     pairs = greedy_unique_match(top_k_pairs(CV), threshold=threshold)
@@ -50,7 +56,6 @@ def _form_level(coll, child_level: int, bridge_level: int, threshold: float,
         return 0
 
     # 2. Assign each pair the nearest unused bridge (by pair-centroid cosine).
-    BV = np.asarray([b["vector"] for b in bridges], dtype=np.float32)
     bridge_taken: set[int] = set()
     triads: list[tuple[int, int, int, float]] = []  # (ci, cj, bi, q_pair)
     for ci, cj, q_pair in pairs:
@@ -71,18 +76,18 @@ def _form_level(coll, child_level: int, bridge_level: int, threshold: float,
     mb_level = child_level - 2
     docs = []
     for ci, cj, bi, _ in triads:
-        w1 = float(children[ci]["accumulated_weight"])
-        w2 = float(children[cj]["accumulated_weight"])
-        w3 = float(bridges[bi]["accumulated_weight"])
+        w1 = float(child_meta[ci]["accumulated_weight"])
+        w2 = float(child_meta[cj]["accumulated_weight"])
+        w3 = float(bridge_meta[bi]["accumulated_weight"])
         vec, q_mb_raw = compute_metabary_vec(CV[ci], CV[cj], BV[bi], w1, w2, w3)
         acc_w = q_mb_raw * level_factor(mb_level, alpha)
-        docs.append(metabary(children[ci]["_id"], children[cj]["_id"], mb_level, vec,
+        docs.append(metabary(child_ids[ci], child_ids[cj], mb_level, vec,
                              q_mb_raw, acc_w))
     res = coll.insert_many(docs)
     now = datetime.now(timezone.utc)
     ups: list[UpdateOne] = []
     for (ci, cj, bi, _), eid in zip(triads, res.inserted_ids, strict=True):
-        for cm_id in (children[ci]["_id"], children[cj]["_id"], bridges[bi]["_id"]):
+        for cm_id in (child_ids[ci], child_ids[cj], bridge_ids[bi]):
             ups.append(UpdateOne({"_id": cm_id},
                                  {"$set": {"parent_edge_id": eid, "updated_at": now}}))
     coll.bulk_write(ups, ordered=False)

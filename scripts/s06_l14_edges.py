@@ -41,15 +41,27 @@ def run(argv: Sequence[str] | None = None) -> None:
             )
 
     # Load all L14 word nodes that have a vector (stage 05 must have run).
+    # Pre-allocate V to avoid the ~10 GB Python-list-of-floats overhead that
+    # np.asarray([w["vector"] for w in words]) would create.
+    _MAX_WORDS = args.limit or 1_000_000
     cur = coll.find(
         {"doc_type": "node", "node_type": "word", "level": 14, "vector": {"$ne": None}},
         {"_id": 1, "vector": 1, "properties.word": 1, "properties.pos": 1,
          "properties.relations": 1},
-    )
-    words = list(cur)
-    if args.limit:
-        words = words[: args.limit]
-    log.info("loaded %d L14 word nodes with vectors", len(words))
+    ).sort("_id", 1)
+
+    ids: list = []
+    words: list[dict] = []   # lightweight: _id stripped, vector not stored here
+    V = np.empty((_MAX_WORDS, settings.embed_dim), dtype=np.float32)
+    for i, doc in enumerate(cur):
+        if i >= _MAX_WORDS:
+            break
+        ids.append(doc["_id"])
+        words.append({"properties": doc["properties"]})
+        V[i] = doc["vector"]
+    n_words = len(ids)
+    V = V[:n_words]
+    log.info("loaded %d L14 word nodes with vectors", n_words)
 
     by_key: dict[tuple[str, str], int] = {}
     by_word: dict[str, list[int]] = {}
@@ -57,8 +69,6 @@ def run(argv: Sequence[str] | None = None) -> None:
         p = w["properties"]
         by_key[(p["word"], p["pos"])] = i
         by_word.setdefault(p["word"], []).append(i)
-    V = np.asarray([w["vector"] for w in words], dtype=np.float32)
-    ids = [w["_id"] for w in words]
 
     # Embed TYPE_SENTENCES once.
     embedder = get_embedder(settings)
