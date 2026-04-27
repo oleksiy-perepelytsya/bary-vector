@@ -19,7 +19,6 @@ from pymongo import UpdateOne
 from lib.bary_vec import compute_bary_vec
 from lib.db import get_collection
 from lib.docs import baryedge
-from lib.match import nearest_row
 from scripts._base import bootstrap, finish
 
 STAGE = "07_orphan_reentry"
