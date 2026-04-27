@@ -30,7 +30,7 @@ def run(argv: Sequence[str] | None = None) -> None:
     log.info("start processed=%d dry_run=%s", cp.processed, args.dry_run)
 
     orphan_ids: list = []
-    OV = np.empty((500_000, settings.embed_dim), dtype=np.float32)
+    OV: np.ndarray = np.empty((500_000, settings.embed_dim), dtype=np.float32)
     for i, doc in enumerate(coll.find(
         {"doc_type": "node", "node_type": "word", "level": 14,
          "parent_edge_id": None, "vector": {"$ne": None}},
@@ -43,7 +43,7 @@ def run(argv: Sequence[str] | None = None) -> None:
 
     be_ids: list = []
     be_meta: list[dict] = []  # edge_type, type_vector, q, accumulated_weight
-    BEV = np.empty((500_000, settings.embed_dim), dtype=np.float32)
+    BEV: np.ndarray = np.empty((500_000, settings.embed_dim), dtype=np.float32)
     for i, doc in enumerate(coll.find(
         {"doc_type": "baryedge", "level": 14},
         {"_id": 1, "vector": 1, "edge_type": 1, "type_vector": 1, "q": 1,
