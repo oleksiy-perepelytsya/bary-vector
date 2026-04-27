@@ -5,6 +5,7 @@ services:
     # MongoDB Community 8.x + bundled mongot (Atlas Search / Vector Search local)
     image: mongodb/mongodb-atlas-local:8
     container_name: barygraph-mongo
+    mem_limit: 10g   # keeps WiredTiger cache ~4.5 GB, leaves headroom for Python
     ports:
       # Host port 27117 so tests/dev never collide with other local Mongos.
       - "27117:27017"

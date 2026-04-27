@@ -3,6 +3,9 @@
     "barygraph": {
       "command": "python",
       "args": ["-m", "scripts.mcp_server"]
+    },
+    "barygraph-remote": {
+      "command": "scripts/mcp_remote.sh"
     }
   }
 }
