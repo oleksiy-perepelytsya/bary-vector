@@ -29,7 +29,7 @@ def _load_unparented_bes(coll, level: int) -> tuple[list, list[dict], np.ndarray
     """Return (ids, meta_list, V) for unparented BEs at level, streaming into pre-alloc numpy."""
     ids: list = []
     meta: list[dict] = []
-    V = np.empty((1_000_000, 768), dtype=np.float32)
+    V = np.empty((2_000_000, 768), dtype=np.float32)
     for i, doc in enumerate(coll.find(
         {"doc_type": "baryedge", "level": level, "parent_edge_id": None},
         {"_id": 1, "vector": 1, "accumulated_weight": 1},
@@ -74,23 +74,28 @@ def _form_level(coll, child_level: int, bridge_level: int, threshold: float,
         return len(triads)
 
     mb_level = child_level - 2
-    docs = []
-    for ci, cj, bi, _ in triads:
-        w1 = float(child_meta[ci]["accumulated_weight"])
-        w2 = float(child_meta[cj]["accumulated_weight"])
-        w3 = float(bridge_meta[bi]["accumulated_weight"])
-        vec, q_mb_raw = compute_metabary_vec(CV[ci], CV[cj], BV[bi], w1, w2, w3)
-        acc_w = q_mb_raw * level_factor(mb_level, alpha)
-        docs.append(metabary(child_ids[ci], child_ids[cj], mb_level, vec,
-                             q_mb_raw, acc_w))
-    res = coll.insert_many(docs)
     now = datetime.now(timezone.utc)
-    ups: list[UpdateOne] = []
-    for (ci, cj, bi, _), eid in zip(triads, res.inserted_ids, strict=True):
-        for cm_id in (child_ids[ci], child_ids[cj], bridge_ids[bi]):
-            ups.append(UpdateOne({"_id": cm_id},
-                                 {"$set": {"parent_edge_id": eid, "updated_at": now}}))
-    coll.bulk_write(ups, ordered=False)
+    # Stream in batches: each metabary doc holds a 768-dim vector as a Python
+    # list of floats (~24 KB); building all docs at once can exhaust RAM at scale.
+    BATCH = 1000
+    for start in range(0, len(triads), BATCH):
+        batch = triads[start : start + BATCH]
+        docs = []
+        for ci, cj, bi, _ in batch:
+            w1 = float(child_meta[ci]["accumulated_weight"])
+            w2 = float(child_meta[cj]["accumulated_weight"])
+            w3 = float(bridge_meta[bi]["accumulated_weight"])
+            vec, q_mb_raw = compute_metabary_vec(CV[ci], CV[cj], BV[bi], w1, w2, w3)
+            acc_w = q_mb_raw * level_factor(mb_level, alpha)
+            docs.append(metabary(child_ids[ci], child_ids[cj], mb_level, vec,
+                                 q_mb_raw, acc_w))
+        res = coll.insert_many(docs)
+        ups: list[UpdateOne] = []
+        for (ci, cj, bi, _), eid in zip(batch, res.inserted_ids, strict=True):
+            for cm_id in (child_ids[ci], child_ids[cj], bridge_ids[bi]):
+                ups.append(UpdateOne({"_id": cm_id},
+                                     {"$set": {"parent_edge_id": eid, "updated_at": now}}))
+        coll.bulk_write(ups, ordered=False)
     return len(triads)
 
 
