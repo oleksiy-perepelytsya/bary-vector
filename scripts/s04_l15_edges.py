@@ -120,25 +120,36 @@ def run(argv: Sequence[str] | None = None) -> None:
         )
 
     # --- Load all L15 sense nodes ---
+    # Pre-allocate numpy array with a safe upper bound so we never hold two
+    # copies of the vector data in memory simultaneously (~37 GB Python-list
+    # overhead with list(cur), ~10 GB double-copy with np.stack(vecs)).
+    _MAX_SENSES = args.limit or 2_000_000
+    log.info("streaming L15 senses from MongoDB (pre-alloc %d)", _MAX_SENSES)
     cur = coll.find(
         {"doc_type": "node", "node_type": "sense", "level": 15},
-        {"_id": 1, "vector": 1, "properties.word": 1, "properties.pos": 1,
-         "parent_edge_id": 1},
+        {"_id": 1, "vector": 1, "properties.word": 1, "properties.pos": 1},
     ).sort("_id", 1)
-    senses = list(cur)
-    if args.limit:
-        senses = senses[: args.limit]
-    n = len(senses)
+
+    ids: list = []
+    words: list[tuple[str, str]] = []
+    V = np.empty((_MAX_SENSES, 768), dtype=np.float32)
+    for i, doc in enumerate(cur):
+        if i >= _MAX_SENSES:
+            break
+        ids.append(doc["_id"])
+        words.append((doc["properties"]["word"], doc["properties"]["pos"]))
+        V[i] = doc["vector"]
+        if i % 100_000 == 0 and i > 0:
+            log.info("  loaded %d senses", i)
+    n = len(ids)
+    V = V[:n]
+
     if n < 2:
         log.warning("fewer than 2 L15 senses (%d) — nothing to pair", n)
         cp.total = n
         if not args.dry_run:
             finish(cp, settings, log)
         return
-
-    ids = [s["_id"] for s in senses]
-    words = [(s["properties"]["word"], s["properties"]["pos"]) for s in senses]
-    V = np.asarray([s["vector"] for s in senses], dtype=np.float32)
 
     embedder = get_embedder(settings)
     batch_n = args.batch_size or settings.embed_batch_size

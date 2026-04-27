@@ -41,7 +41,7 @@ FERMION_TIERS: tuple[FermionTier, ...] = (
 
 # Above this many vectors, use hnswlib ANN instead of brute-force O(n²).
 ANN_THRESHOLD: int = int(os.environ.get("ANN_THRESHOLD", 20_000))
-ANN_K: int = int(os.environ.get("ANN_K", 50))
+ANN_K: int = int(os.environ.get("ANN_K", 20))
 ANN_EF: int = int(os.environ.get("ANN_EF", 100))
 ANN_M: int = int(os.environ.get("ANN_M", 16))
 ANN_EF_CONSTRUCTION: int = int(os.environ.get("ANN_EF_CONSTRUCTION", 100))
@@ -85,11 +85,11 @@ def _ann_pairs(vectors: np.ndarray, k: int | None) -> Iterable[tuple[int, int, f
 
     n, dim = vectors.shape
     nn_k = min(n - 1, ANN_K)
-    ef = max(ANN_EF, nn_k)
+    ef = max(ANN_EF, (nn_k + 1) * 2)
 
     index = hnswlib.Index(space="cosine", dim=dim)
     index.init_index(max_elements=n, ef_construction=ANN_EF_CONSTRUCTION, M=ANN_M)
-    index.add_items(vectors, list(range(n)))
+    index.add_items(vectors, np.arange(n))
     index.set_ef(ef)
 
     labels, distances = index.knn_query(vectors, k=nn_k + 1)  # +1: self is returned
