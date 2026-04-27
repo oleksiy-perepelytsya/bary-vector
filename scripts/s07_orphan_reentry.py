@@ -30,7 +30,7 @@ def run(argv: Sequence[str] | None = None) -> None:
     log.info("start processed=%d dry_run=%s", cp.processed, args.dry_run)
 
     orphan_ids: list = []
-    OV: np.ndarray = np.empty((500_000, settings.embed_dim), dtype=np.float32)
+    OV: np.ndarray = np.empty((2_000_000, settings.embed_dim), dtype=np.float32)
     for i, doc in enumerate(coll.find(
         {"doc_type": "node", "node_type": "word", "level": 14,
          "parent_edge_id": None, "vector": {"$ne": None}},

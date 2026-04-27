@@ -43,7 +43,7 @@ def run(argv: Sequence[str] | None = None) -> None:
     # Load all L14 word nodes that have a vector (stage 05 must have run).
     # Pre-allocate V to avoid the ~10 GB Python-list-of-floats overhead that
     # np.asarray([w["vector"] for w in words]) would create.
-    _MAX_WORDS = args.limit or 1_000_000
+    _MAX_WORDS = args.limit or 2_000_000
     cur = coll.find(
         {"doc_type": "node", "node_type": "word", "level": 14, "vector": {"$ne": None}},
         {"_id": 1, "vector": 1, "properties.word": 1, "properties.pos": 1,

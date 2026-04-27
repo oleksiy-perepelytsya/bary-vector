@@ -24,7 +24,7 @@ from lib.bary_vec import build_l15_type_text, compute_bary_vec
 from lib.db import get_collection
 from lib.docs import baryedge
 from lib.embed import get_embedder
-from lib.match import greedy_unique_match, nearest_row, top_k_pairs
+from lib.match import greedy_unique_match, top_k_pairs
 from scripts._base import bootstrap, finish
 
 STAGE = "04_l15_edges"
@@ -67,10 +67,15 @@ def _run_orphan_reentry(
         return 0
 
     BEV = np.stack(be_vecs)
-    re_meta: list[tuple[int, int]] = []  # (orphan_idx, be_list_idx)
-    for oi in orphans:
-        bi, _ = nearest_row(V[oi], BEV)
-        re_meta.append((oi, bi))
+    OV = V[orphans]  # (n_orphans, dim)
+    # Chunked matmul: full OV@BEV.T would be ~(477K×630K×4B)=1.1TB; CHUNK keeps it to ~614MB/step
+    CHUNK = 1024
+    n_orphans = len(orphans)
+    best_bi = np.empty(n_orphans, dtype=np.int64)
+    for start in range(0, n_orphans, CHUNK):
+        end = min(start + CHUNK, n_orphans)
+        best_bi[start:end] = np.argmax(OV[start:end] @ BEV.T, axis=1)
+    re_meta: list[tuple[int, int]] = [(oi, int(bi)) for oi, bi in zip(orphans, best_bi.tolist())]
 
     n_reentry = 0
     for start in range(0, len(re_meta), batch_n):
