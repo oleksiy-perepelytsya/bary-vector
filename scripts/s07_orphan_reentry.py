@@ -64,9 +64,13 @@ def run(argv: Sequence[str] | None = None) -> None:
             finish(cp, settings, log)
         return
 
-    # Vectorised nearest-BE search: one matrix multiply instead of n_orphans loops.
-    sims = OV @ BEV.T           # (n_orphans, n_bes)
-    best_bi = np.argmax(sims, axis=1)  # (n_orphans,)
+    # Chunked nearest-BE search: full OV@BEV.T would be ~(300K×150K×4 B)=180 GB.
+    # Process orphans in chunks so the intermediate sims matrix stays small.
+    CHUNK = 1024
+    best_bi = np.empty(n_orphans, dtype=np.int64)
+    for start in range(0, n_orphans, CHUNK):
+        end = min(start + CHUNK, n_orphans)
+        best_bi[start:end] = np.argmax(OV[start:end] @ BEV.T, axis=1)
 
     batch_n = args.batch_size or settings.batch_size
     edge_docs = []
