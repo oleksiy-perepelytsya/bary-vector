@@ -69,21 +69,27 @@ def _form_level(coll, child_level: int, bridge_level: int, threshold: float,
 
     if n_bridges > ANN_THRESHOLD:
         import hnswlib
-        ef_c = ANN_EF_CONSTRUCTION
-        ef_q = max(ANN_EF, _K * 2)
-        _log.info("building bridge HNSW index: n=%d ef_construction=%d M=%d",
-                  n_bridges, ef_c, ANN_M)
+        # Use ef_construction=100 regardless of ANN_EF_CONSTRUCTION env var:
+        # ANN_EF_CONSTRUCTION=50 speeds up the child HNSW but is too sparse
+        # to reliably satisfy knn_query when k is large.
+        _BRIDGE_EF_C = 100
+        # k=50 is sufficient — with 1.39M bridges and at most n_pairs taken,
+        # the nearest untaken bridge is almost always in the top-50.
+        _BRIDGE_K = min(50, n_bridges)
+        _bridge_ef_q = max(200, _BRIDGE_K * 4)
+        _log.info("building bridge HNSW index: n=%d ef_construction=%d M=%d k=%d",
+                  n_bridges, _BRIDGE_EF_C, ANN_M, _BRIDGE_K)
         bidx = hnswlib.Index(space="cosine", dim=BV.shape[1])
-        bidx.init_index(max_elements=n_bridges, ef_construction=ef_c, M=ANN_M)
+        bidx.init_index(max_elements=n_bridges, ef_construction=_BRIDGE_EF_C, M=ANN_M)
         bidx.add_items(BV)
-        bidx.set_ef(ef_q)
+        bidx.set_ef(_bridge_ef_q)
         _log.info("bridge HNSW ready")
 
         for ci, cj, q_pair in pairs:
             centroid = CV[ci] + CV[cj]
             n = float(np.linalg.norm(centroid))
             centroid = centroid / n if n else centroid
-            labels, _ = bidx.knn_query(centroid.reshape(1, -1), k=_K)
+            labels, _ = bidx.knn_query(centroid.reshape(1, -1), k=_BRIDGE_K)
             found = False
             for bi in labels[0]:
                 bi = int(bi)
@@ -93,9 +99,9 @@ def _form_level(coll, child_level: int, bridge_level: int, threshold: float,
                     found = True
                     break
             if not found:
-                # Rare: top-K all taken — expand search
+                # Rare: top-K all taken — expand search up to 500
                 labels2, _ = bidx.knn_query(centroid.reshape(1, -1),
-                                            k=min(n_bridges, _K * 10))
+                                            k=min(n_bridges, _BRIDGE_K * 10))
                 for bi in labels2[0]:
                     bi = int(bi)
                     if bi not in bridge_taken:
