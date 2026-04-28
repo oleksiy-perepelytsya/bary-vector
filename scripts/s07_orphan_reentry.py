@@ -71,35 +71,47 @@ def run(argv: Sequence[str] | None = None) -> None:
         end = min(start + CHUNK, n_orphans)
         best_bi[start:end] = np.argmax(OV[start:end] @ BEV.T, axis=1)
 
+    # Stream inserts: building all 1.35M docs before inserting would hold ~66 GB of
+    # Python-list float data in RAM (_vec() expands each 768-dim vector to a list of
+    # Python floats at 32 bytes each × 2 vectors × 1.35M docs). Process batch_n at a time.
     batch_n = args.batch_size or settings.batch_size
-    edge_docs = []
-    parent_ups: list[UpdateOne] = []
-    for idx, (oid, bi) in enumerate(zip(orphan_ids, best_bi.tolist(), strict=True)):
-        partner = be_meta[bi]
-        tv = np.asarray(partner["type_vector"], dtype=np.float32)
-        q = float(partner["q"])
-        acc_w = float(partner.get("accumulated_weight", q))
-        bv = compute_bary_vec(OV[idx], BEV[bi], tv, q)
-        edge_docs.append(
-            baryedge(oid, be_ids[bi], 14, bv, q,
-                     accumulated_weight=acc_w,
-                     edge_type=partner.get("edge_type"), type_vector=tv,
-                     source="inferred", confidence=q)
-        )
+    n_written = 0
     if not args.dry_run:
         now = datetime.now(timezone.utc)
-        all_eids: list = []
-        for start in range(0, len(edge_docs), batch_n):
-            res = coll.insert_many(edge_docs[start : start + batch_n])
-            all_eids.extend(res.inserted_ids)
-        for oid, eid in zip(orphan_ids, all_eids, strict=True):
-            parent_ups.append(
-                UpdateOne({"_id": oid}, {"$set": {"parent_edge_id": eid, "updated_at": now}})
+        batch_docs: list[dict] = []
+        batch_oids: list = []
+        for idx in range(n_orphans):
+            oid = orphan_ids[idx]
+            bi = int(best_bi[idx])
+            partner = be_meta[bi]
+            tv = np.asarray(partner["type_vector"], dtype=np.float32)
+            q = float(partner["q"])
+            acc_w = float(partner.get("accumulated_weight", q))
+            bv = compute_bary_vec(OV[idx], BEV[bi], tv, q)
+            batch_docs.append(
+                baryedge(oid, be_ids[bi], 14, bv, q,
+                         accumulated_weight=acc_w,
+                         edge_type=partner.get("edge_type"), type_vector=tv,
+                         source="inferred", confidence=q)
             )
-        coll.bulk_write(parent_ups, ordered=False)
+            batch_oids.append(oid)
+            if len(batch_docs) >= batch_n:
+                res = coll.insert_many(batch_docs)
+                ups = [UpdateOne({"_id": o}, {"$set": {"parent_edge_id": e, "updated_at": now}})
+                       for o, e in zip(batch_oids, res.inserted_ids, strict=True)]
+                coll.bulk_write(ups, ordered=False)
+                n_written += len(batch_docs)
+                batch_docs = []
+                batch_oids = []
+        if batch_docs:
+            res = coll.insert_many(batch_docs)
+            ups = [UpdateOne({"_id": o}, {"$set": {"parent_edge_id": e, "updated_at": now}})
+                   for o, e in zip(batch_oids, res.inserted_ids, strict=True)]
+            coll.bulk_write(ups, ordered=False)
+            n_written += len(batch_docs)
 
-    cp.processed = len(edge_docs)
-    cp.total = len(edge_docs)
+    cp.processed = n_written if not args.dry_run else n_orphans
+    cp.total = n_orphans
     if not args.dry_run:
         finish(cp, settings, log)
 

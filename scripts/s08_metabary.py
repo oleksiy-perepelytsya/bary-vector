@@ -19,8 +19,10 @@ from pymongo import UpdateOne
 from lib.bary_vec import compute_metabary_vec, level_factor
 from lib.db import get_collection
 from lib.docs import metabary
-from lib.match import greedy_unique_match, top_k_pairs
+from lib.match import ANN_EF, ANN_EF_CONSTRUCTION, ANN_M, ANN_THRESHOLD, greedy_unique_match, top_k_pairs
 from scripts._base import bootstrap, finish
+
+_log = __import__("logging").getLogger(__name__)
 
 STAGE = "08_metabary"
 
@@ -51,24 +53,79 @@ def _form_level(coll, child_level: int, bridge_level: int, threshold: float,
 
     # 1. Greedy mutual-cosine matching among children (similarity is between
     #    the two children, NOT bridge↔child — see CLAUDE.md Stage 7).
-    pairs = greedy_unique_match(top_k_pairs(CV), threshold=threshold)
+    pairs = greedy_unique_match(top_k_pairs(CV, min_score=threshold), threshold=threshold)
     if not pairs:
         return 0
 
+    _log.info("greedy_unique_match: %d pairs from %d children", len(pairs), len(child_ids))
+
     # 2. Assign each pair the nearest unused bridge (by pair-centroid cosine).
+    # For large bridge sets build an HNSW index to replace the O(n_bridges*dim)
+    # full scan — otherwise bridge assignment would take hours at 1.4M bridges.
+    n_bridges = len(bridge_ids)
+    _K = min(200, n_bridges)
     bridge_taken: set[int] = set()
     triads: list[tuple[int, int, int, float]] = []  # (ci, cj, bi, q_pair)
-    for ci, cj, q_pair in pairs:
-        centroid = CV[ci] + CV[cj]
-        n = float(np.linalg.norm(centroid))
-        centroid = centroid / n if n else centroid
-        sims = BV @ centroid
-        order = np.argsort(-sims)
-        for bi in order:
-            if int(bi) not in bridge_taken:
-                bridge_taken.add(int(bi))
-                triads.append((ci, cj, int(bi), q_pair))
-                break
+
+    if n_bridges > ANN_THRESHOLD:
+        import hnswlib
+        ef_c = ANN_EF_CONSTRUCTION
+        ef_q = max(ANN_EF, _K * 2)
+        _log.info("building bridge HNSW index: n=%d ef_construction=%d M=%d",
+                  n_bridges, ef_c, ANN_M)
+        bidx = hnswlib.Index(space="cosine", dim=BV.shape[1])
+        bidx.init_index(max_elements=n_bridges, ef_construction=ef_c, M=ANN_M)
+        bidx.add_items(BV)
+        bidx.set_ef(ef_q)
+        _log.info("bridge HNSW ready")
+
+        for ci, cj, q_pair in pairs:
+            centroid = CV[ci] + CV[cj]
+            n = float(np.linalg.norm(centroid))
+            centroid = centroid / n if n else centroid
+            labels, _ = bidx.knn_query(centroid.reshape(1, -1), k=_K)
+            found = False
+            for bi in labels[0]:
+                bi = int(bi)
+                if bi not in bridge_taken:
+                    bridge_taken.add(bi)
+                    triads.append((ci, cj, bi, q_pair))
+                    found = True
+                    break
+            if not found:
+                # Rare: top-K all taken — expand search
+                labels2, _ = bidx.knn_query(centroid.reshape(1, -1),
+                                            k=min(n_bridges, _K * 10))
+                for bi in labels2[0]:
+                    bi = int(bi)
+                    if bi not in bridge_taken:
+                        bridge_taken.add(bi)
+                        triads.append((ci, cj, bi, q_pair))
+                        break
+    else:
+        for ci, cj, q_pair in pairs:
+            centroid = CV[ci] + CV[cj]
+            n = float(np.linalg.norm(centroid))
+            centroid = centroid / n if n else centroid
+            sims = BV @ centroid
+            if len(sims) > _K:
+                cands = np.argpartition(-sims, _K)[:_K]
+                order: np.ndarray = cands[np.argsort(-sims[cands])]
+            else:
+                order = np.argsort(-sims)
+            found = False
+            for bi in order:
+                if int(bi) not in bridge_taken:
+                    bridge_taken.add(int(bi))
+                    triads.append((ci, cj, int(bi), q_pair))
+                    found = True
+                    break
+            if not found:
+                for bi in np.argsort(-sims):
+                    if int(bi) not in bridge_taken:
+                        bridge_taken.add(int(bi))
+                        triads.append((ci, cj, int(bi), q_pair))
+                        break
 
     if not triads or dry_run:
         return len(triads)

@@ -76,7 +76,18 @@ def run(argv: Sequence[str] | None = None) -> None:
     et_vecs = embedder.embed([TYPE_SENTENCES[k] for k in et_keys])
     type_vec: dict[str, np.ndarray] = dict(zip(et_keys, et_vecs, strict=True))
 
-    paired: set[int] = set()
+    # Pre-load already-paired word indices so --force re-runs don't double-parent them.
+    already_parented: set = {
+        doc["_id"]
+        for doc in coll.find(
+            {"doc_type": "node", "node_type": "word", "level": 14,
+             "parent_edge_id": {"$ne": None}},
+            {"_id": 1},
+        )
+    }
+    paired: set[int] = {i for i, oid in enumerate(ids) if oid in already_parented}
+    if paired:
+        log.info("skipping %d already-paired words (pre-loaded from DB)", len(paired))
     n_edges = 0
 
     for tier in FERMION_TIERS:
