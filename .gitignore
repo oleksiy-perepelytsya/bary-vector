@@ -15,9 +15,11 @@ data/parsed/*.jsonl
 data/parsed/*.tmp
 !data/.gitkeep
 !data/parsed/.gitkeep
+data/parsed_all/
 
 pipeline_state/*.json
 !pipeline_state/.gitkeep
+pipeline_state_all/
 
 .pytest_cache/
 .ruff_cache/
@@ -25,3 +27,4 @@ pipeline_state/*.json
 .coverage
 htmlcov/
 .mcp.json
+nohup.out
