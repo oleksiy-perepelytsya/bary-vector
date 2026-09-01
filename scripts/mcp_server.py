@@ -180,8 +180,10 @@ mcp = FastMCP(
     ),
 )
 
-_read_only = os.environ.get("MCP_READ_ONLY", "0").lower() in ("1", "true", "yes")
+_public_only = os.environ.get("MCP_PUBLIC", "0").lower() in ("1", "true", "yes")
+_read_only = _public_only or os.environ.get("MCP_READ_ONLY", "0").lower() in ("1", "true", "yes")
 _write_tool = (lambda f: f) if _read_only else mcp.tool()
+_assoc_tool = (lambda f: f) if _public_only else mcp.tool()
 
 
 def _fmt(obj: Any) -> str:
@@ -1381,7 +1383,7 @@ def _validate_assoc_config(
     return _config_from_kwargs(**kwargs)
 
 
-@mcp.tool()
+@_assoc_tool
 async def associative_search(
     query: str,
     seed_top_k: int = 20,
@@ -1465,7 +1467,7 @@ async def associative_search(
     return _fmt(payload)
 
 
-@mcp.tool()
+@_assoc_tool
 async def associative_progressive(
     session_id: str,
     stage: str,
@@ -1662,6 +1664,14 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0", help="HTTP bind host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8000, help="HTTP port (default: 8000)")
     args = parser.parse_args()
+
+    if _public_only:
+        mode = "PUBLIC (read-only, 9 tools)"
+    elif _read_only:
+        mode = "READ_ONLY (11 tools, no writes)"
+    else:
+        mode = "PRIVATE (full 17 tools)"
+    _log.info("mode: %s", mode)
 
     if args.transport == "sse":
         import uvicorn
