@@ -21,13 +21,24 @@ STANDARD_INDEXES: list[list[tuple[str, int]]] = [
     [("edge_type", ASCENDING), ("level", ASCENDING)],
     [("parent_edge_id", ASCENDING)],
     [("properties.word", ASCENDING), ("properties.pos", ASCENDING)],
+    # Word identity across languages: (word, pos) alone collides when the
+    # same surface form exists in multiple languages (e.g. "gate" en/nl/fr).
+    [("properties.word", ASCENDING), ("properties.pos", ASCENDING),
+     ("properties.lang", ASCENDING)],
     [("properties.sense_id", ASCENDING)],
 ]
 
 
 @lru_cache(maxsize=8)
 def _cached_client(uri: str) -> MongoClient:
-    return MongoClient(uri, serverSelectionTimeoutMS=5000)
+    return MongoClient(
+        uri,
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=10000,
+        socketTimeoutMS=120000,
+        waitQueueTimeoutMS=5000,
+        maxPoolSize=100,
+    )
 
 
 def get_client(settings: Settings) -> MongoClient:

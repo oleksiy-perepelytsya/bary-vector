@@ -27,7 +27,10 @@ STAGE = "01_parse"
 def run(argv: Sequence[str] | None = None) -> None:
     settings, args, log, cp = bootstrap(STAGE, argv)
     src = Path(args.kaikki_path or settings.kaikki_path)
-    log.info("start src=%s processed=%d dry_run=%s", src, cp.processed, args.dry_run)
+    raw_langs = [t.strip() for t in settings.kaikki_langs.split(",") if t.strip()]
+    langs = None if "*" in raw_langs else (tuple(raw_langs) or ("en",))
+    log.info("start src=%s langs=%s processed=%d dry_run=%s",
+             src, "*" if langs is None else list(langs), cp.processed, args.dry_run)
 
     if not src.exists():
         raise FileNotFoundError(f"kaikki dump not found: {src} — run `make fetch-kaikki`")
@@ -53,7 +56,7 @@ def run(argv: Sequence[str] | None = None) -> None:
                 obj = orjson.loads(line)
             except orjson.JSONDecodeError:
                 continue
-            parsed = parse_entry(obj)
+            parsed = parse_entry(obj, langs=langs)
             if parsed is None:
                 continue
             pw, senses = parsed

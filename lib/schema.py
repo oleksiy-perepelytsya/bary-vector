@@ -37,6 +37,7 @@ class ParsedSense:
     sense_id: str                      # kaikki-stable id
     sense_idx: int                     # position within senses[]
     gloss: str
+    lang_code: str = "en"              # source language (kaikki lang_code)
     examples: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     topics: list[str] = field(default_factory=list)

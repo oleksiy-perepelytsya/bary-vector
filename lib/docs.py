@@ -38,6 +38,7 @@ def sense_node(s: ParsedSense, vector: np.ndarray | list[float]) -> dict[str, An
         "properties": {
             "word": s.word,
             "pos": s.pos,
+            "lang": s.lang_code,
             "sense_id": s.sense_id,
             "sense_idx": s.sense_idx,
             "gloss": s.gloss,
@@ -67,6 +68,7 @@ def word_node(w: ParsedWord) -> dict[str, Any]:
         "properties": {
             "word": w.word,
             "pos": w.pos,
+            "lang": w.lang_code,
             "etymology": w.etymology,
             "forms": w.forms,
             "ipa": w.ipa,

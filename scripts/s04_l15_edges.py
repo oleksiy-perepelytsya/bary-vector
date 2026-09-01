@@ -31,10 +31,11 @@ from scripts._base import bootstrap, finish
 STAGE = "04_l15_edges"
 
 
-def _word_neighborhood(coll, word: str, pos: str) -> tuple[list[str], list[str]]:
+def _word_neighborhood(coll, word: str, pos: str, lang: str) -> tuple[list[str], list[str]]:
     """Return (antonyms, synonyms) for the L14 word node, for L15 type_text."""
     doc = coll.find_one(
-        {"doc_type": "node", "node_type": "word", "properties.word": word, "properties.pos": pos},
+        {"doc_type": "node", "node_type": "word", "properties.word": word,
+         "properties.pos": pos, "properties.lang": lang},
         {"properties.relations": 1},
     )
     ants: list[str] = []
@@ -51,7 +52,7 @@ def _run_orphan_reentry(
     coll,
     bridge_coll,
     ids: list,
-    words: list[tuple[str, str]],
+    words: list[tuple[str, str, str]],
     V: np.ndarray,
     be_ids: list,
     be_vecs: list[np.ndarray],
@@ -129,24 +130,28 @@ def run(argv: Sequence[str] | None = None) -> None:
         )
 
     # --- Load all L15 sense nodes ---
-    # Pre-allocate numpy array with a safe upper bound so we never hold two
+    # Pre-allocate numpy array with an exact upper bound so we never hold two
     # copies of the vector data in memory simultaneously (~37 GB Python-list
     # overhead with list(cur), ~10 GB double-copy with np.stack(vecs)).
-    _MAX_SENSES = args.limit or 2_000_000
+    _MAX_SENSES = args.limit or coll.count_documents(
+        {"doc_type": "node", "node_type": "sense", "level": 15}
+    )
     log.info("streaming L15 senses from MongoDB (pre-alloc %d)", _MAX_SENSES)
     cur = coll.find(
         {"doc_type": "node", "node_type": "sense", "level": 15},
-        {"_id": 1, "vector": 1, "properties.word": 1, "properties.pos": 1},
+        {"_id": 1, "vector": 1, "properties.word": 1, "properties.pos": 1,
+         "properties.lang": 1},
     ).sort("_id", 1)
 
     ids: list = []
-    words: list[tuple[str, str]] = []
-    V = np.empty((_MAX_SENSES, 768), dtype=np.float32)
+    words: list[tuple[str, str, str]] = []
+    V = np.empty((_MAX_SENSES, settings.embed_dim), dtype=np.float32)
     for i, doc in enumerate(cur):
         if i >= _MAX_SENSES:
             break
         ids.append(doc["_id"])
-        words.append((doc["properties"]["word"], doc["properties"]["pos"]))
+        p = doc["properties"]
+        words.append((p["word"], p["pos"], p.get("lang", "en")))
         V[i] = doc["vector"]
         if i % 100_000 == 0 and i > 0:
             log.info("  loaded %d senses", i)
@@ -163,11 +168,11 @@ def run(argv: Sequence[str] | None = None) -> None:
     embedder = get_embedder(settings)
     batch_n = args.batch_size or settings.embed_batch_size
 
-    nb_cache: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
+    nb_cache: dict[tuple[str, str, str], tuple[list[str], list[str]]] = {}
 
-    def nb(wp: tuple[str, str]) -> tuple[list[str], list[str]]:
+    def nb(wp: tuple[str, str, str]) -> tuple[list[str], list[str]]:
         if wp not in nb_cache:
-            nb_cache[wp] = _word_neighborhood(coll, wp[0], wp[1])
+            nb_cache[wp] = _word_neighborhood(coll, wp[0], wp[1], wp[2])
         return nb_cache[wp]
 
     be_ids: list = []
@@ -202,7 +207,7 @@ def run(argv: Sequence[str] | None = None) -> None:
         )
     else:
         # --- Same-headword pairs get the polysemy q floor ---
-        by_word: dict[tuple[str, str], list[int]] = {}
+        by_word: dict[tuple[str, str, str], list[int]] = {}
         for i, wp in enumerate(words):
             by_word.setdefault(wp, []).append(i)
         same_word: set[frozenset[int]] = set()

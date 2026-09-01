@@ -13,6 +13,7 @@ def test_sense_node_schema():
     assert doc["doc_type"] == "node" and doc["node_type"] == "sense"
     assert doc["level"] == 15 and doc["parent_edge_id"] is None
     assert doc["properties"]["sense_id"] == "cat-noun-0"
+    assert doc["properties"]["lang"] == "en"
     assert len(doc["vector"]) == 768
 
 
@@ -22,6 +23,7 @@ def test_word_node_placeholder_vector():
     assert doc["level"] == 14 and doc["vector"] is None
     assert "char_len" not in doc["properties"]
     assert "syllable_ct" not in doc["properties"]
+    assert doc["properties"]["lang"] == "en"
     assert doc["surface"] == 2
 
 

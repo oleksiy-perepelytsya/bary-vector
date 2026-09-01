@@ -59,12 +59,17 @@ class Settings:
     # --- Models (Ollama) ---
     ollama_url: str = "http://localhost:11434"
     embed_model: str = "nomic-embed-text:v1.5"
-    embed_dim: int = 768
+    embed_dim: int = 768  # nomic-embed-text:v1.5 → 768; qwen3-embedding:8b → 4096
     embed_timeout_seconds: float = 600.0
     fake_embed: bool = False
+    # Optional path of the disk-backed embed cache sidecar (see lib.embed.CachedEmbedder).
+    # When unset, embedding runs uncached.
+    embed_cache_file: Path | None = None
 
     # --- Data / state ---
     kaikki_path: Path = field(default_factory=lambda: Path("data/kaikki-en.jsonl"))
+    # Comma-separated kaikki lang_codes to ingest, or "*" for all languages.
+    kaikki_langs: str = "en"
     parsed_dir: Path = field(default_factory=lambda: Path("data/parsed"))
     pipeline_state_dir: Path = field(default_factory=lambda: Path("pipeline_state"))
 
@@ -111,7 +116,11 @@ class Settings:
             embed_dim=_env_int("EMBED_DIM", cls.embed_dim),
             embed_timeout_seconds=_env_float("EMBED_TIMEOUT_SECONDS", cls.embed_timeout_seconds),
             fake_embed=_env_bool("BARY_FAKE_EMBED", False),
+            embed_cache_file=(
+                Path(p) if (p := _env_str("EMBED_CACHE_FILE", "")) else None
+            ),
             kaikki_path=Path(_env_str("KAIKKI_PATH", "data/kaikki-en.jsonl")),
+            kaikki_langs=_env_str("KAIKKI_LANGS", "en"),
             parsed_dir=Path(_env_str("PARSED_DIR", "data/parsed")),
             pipeline_state_dir=Path(_env_str("PIPELINE_STATE_DIR", "pipeline_state")),
             batch_size=_env_int("BATCH_SIZE", cls.batch_size),

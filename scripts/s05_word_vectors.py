@@ -64,6 +64,7 @@ def run(argv: Sequence[str] | None = None) -> None:
             break
         props = w["properties"]
         word, pos = props["word"], props["pos"]
+        lang = props.get("lang", "en")
 
         # Senses of W and their parent BEs.
         sense_docs = list(
@@ -73,6 +74,7 @@ def run(argv: Sequence[str] | None = None) -> None:
                     "node_type": "sense",
                     "properties.word": word,
                     "properties.pos": pos,
+                    "properties.lang": lang,
                 },
                 {"_id": 1, "vector": 1, "parent_edge_id": 1},
             )

@@ -66,6 +66,7 @@ def _form_level_sweep(
     alpha: float,
     dry_run: bool,
     outer_pass: int,
+    embed_dim: int,
 ) -> int:
     """Load children+bridges once, sweep all thresholds in memory.
 
@@ -73,8 +74,8 @@ def _form_level_sweep(
     Pair selection is cosine-descending greedy — identical results to the
     original per-round approach because high-cosine pairs are claimed first.
     """
-    child_ids, child_meta, CV = _load_unparented_bes(coll, child_level)
-    bridge_ids, bridge_meta, BV = _load_unparented_bes(coll, bridge_level)
+    child_ids, child_meta, CV = _load_unparented_bes(coll, child_level, embed_dim)
+    bridge_ids, bridge_meta, BV = _load_unparented_bes(coll, bridge_level, embed_dim)
 
     def _log_zeros() -> None:
         thr = base_thr
@@ -241,7 +242,7 @@ def run(argv: Sequence[str] | None = None) -> None:
             n = _form_level_sweep(
                 coll, bridge_coll, child_level, bridge_level,
                 base_thr, min_thr, alpha, args.dry_run,
-                outer_pass,
+                outer_pass, settings.embed_dim,
             )
             pass_total += n
             log.info(

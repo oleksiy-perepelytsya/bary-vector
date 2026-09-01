@@ -4,6 +4,9 @@ from collections.abc import Iterable, Sequence
 
 import numpy as np
 
+# Nominal embedding dimension for the default nomic model. Runtime dimension
+# is authoritative via Settings.embed_dim (nomic→768, qwen3-embedding:8b→4096);
+# bary_vec math is dimension-agnostic.
 EMBED_DIM = 768
 
 # L14 edge-type sentences — embedded once, used as v(type). See CLAUDE.md.

@@ -1,16 +1,23 @@
-"""Embed sense glosses (nomic-embed-text via ollama, or FakeEmbedder).
+"""Embed sense glosses via ollama (or FakeEmbedder).
 
 Reads ``senses.jsonl`` from stage 01, batch-embeds the ``embed_text`` field,
 and writes ``senses_embedded.jsonl`` with the ``vector`` field populated.
 Atomic-rename on completion; resumable by line count.
+
+If ollama is unreachable after exhausting retries, the batch is written with
+zero vectors and the offset is saved to a ``missed.txt`` file alongside the
+output so a follow-up patch pass can fill them in without re-embedding
+everything.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Sequence
 from pathlib import Path
 
+import numpy as np
 import orjson
 
 from lib import checkpoint as cp_mod
@@ -19,6 +26,7 @@ from lib.schema import SENSES_EMBEDDED_FILENAME, SENSES_FILENAME
 from scripts._base import bootstrap, finish
 
 STAGE = "02_embed"
+_log = logging.getLogger(__name__)
 
 
 def _batched(it, n):
@@ -43,9 +51,23 @@ def run(argv: Sequence[str] | None = None) -> None:
     embedder = get_embedder(settings)
     batch_n = args.batch_size or settings.embed_batch_size
     out_tmp = Path(settings.parsed_dir) / (SENSES_EMBEDDED_FILENAME + ".tmp")
+    missed_path = Path(settings.parsed_dir) / "missed.txt"
+    missed_fh = missed_path.open("a")
+
+    # Warm up ollama: first request after idle takes 60-120s (model load).
+    # Subsequent requests are ~8s/batch.  Do a tiny probe so every real
+    # batch hits a warm model.
+    if not settings.fake_embed:
+        log.info("warming up ollama…")
+        try:
+            embedder.embed(["warmup"])
+            log.info("ollama warm")
+        except Exception as exc:
+            log.warning("warmup failed (will retry on first batch): %s", exc)
 
     skip = cp.processed
     n = 0
+    n_missed = 0
 
     def _lines():
         with src.open("rb") as f:
@@ -60,7 +82,16 @@ def run(argv: Sequence[str] | None = None) -> None:
             if args.limit and n - skip >= args.limit:
                 break
             texts = [rec["embed_text"] for rec in batch]
-            vecs = embedder.embed(texts)
+            try:
+                vecs = embedder.embed(texts)
+            except Exception as exc:
+                _log.warning("batch embed failed at n=%d (%d texts): %s — "
+                             "writing zero vectors", n, len(texts), exc)
+                vecs = np.zeros((len(texts), embedder.dim), dtype=np.float32)
+                for i, rec in enumerate(batch):
+                    missed_fh.write(f"{n + i}\t{rec['sense_id']}\n")
+                missed_fh.flush()
+                n_missed += len(texts)
             lines: list[bytes] = []
             for rec, v in zip(batch, vecs, strict=True):
                 n += 1
@@ -79,9 +110,10 @@ def run(argv: Sequence[str] | None = None) -> None:
             if n % (batch_n * 50) == 0:
                 log.info("… embedded %d senses", n)
 
+    missed_fh.close()
     cp.processed = n
     cp.total = n
-    log.info("embedded %d senses (dim=%d)", n, embedder.dim)
+    _log.info("embedded %d senses (dim=%d, missed=%d)", n, embedder.dim, n_missed)
 
     if not args.dry_run:
         os.replace(out_tmp, Path(settings.parsed_dir) / SENSES_EMBEDDED_FILENAME)

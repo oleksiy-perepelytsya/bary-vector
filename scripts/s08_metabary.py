@@ -28,13 +28,13 @@ _log = __import__("logging").getLogger(__name__)
 STAGE = "08_metabary"
 
 
-def _load_unparented_bes(coll, level: int) -> tuple[list, list[dict], np.ndarray]:
+def _load_unparented_bes(coll, level: int, embed_dim: int) -> tuple[list, list[dict], np.ndarray]:
     """Return (ids, meta_list, V) for unparented BEs at level, streaming into pre-alloc numpy."""
     query = {"doc_type": "baryedge", "level": level, "parent_edge_id": None}
     n_docs = coll.count_documents(query)
     ids: list = []
     meta: list[dict] = []
-    V = np.empty((n_docs, 768), dtype=np.float32)
+    V = np.empty((n_docs, embed_dim), dtype=np.float32)
     for i, doc in enumerate(coll.find(
         query,
         {"_id": 1, "vector": 1, "accumulated_weight": 1},
@@ -47,10 +47,10 @@ def _load_unparented_bes(coll, level: int) -> tuple[list, list[dict], np.ndarray
 
 
 def _form_level(coll, bridge_coll, child_level: int, bridge_level: int, threshold: float,
-                alpha: float, dry_run: bool) -> int:
+                alpha: float, dry_run: bool, embed_dim: int) -> int:
     """Form MetaBary at ``child_level - 2`` from children@L and bridges@L-1."""
-    child_ids, child_meta, CV = _load_unparented_bes(coll, child_level)
-    bridge_ids, bridge_meta, BV = _load_unparented_bes(coll, bridge_level)
+    child_ids, child_meta, CV = _load_unparented_bes(coll, child_level, embed_dim)
+    bridge_ids, bridge_meta, BV = _load_unparented_bes(coll, bridge_level, embed_dim)
     if len(child_ids) < 2 or not bridge_ids:
         return 0
 
@@ -144,7 +144,7 @@ def _form_level(coll, bridge_coll, child_level: int, bridge_level: int, threshol
 
     mb_level = child_level - 2
     now = datetime.now(timezone.utc)
-    # Stream in batches: each metabary doc holds a 768-dim vector as a Python
+    # Stream in batches: each metabary doc holds an embed_dim vector as a Python
     # list of floats (~24 KB); building all docs at once can exhaust RAM at scale.
     BATCH = 1000
     for start in range(0, len(triads), BATCH):
@@ -191,7 +191,8 @@ def run(argv: Sequence[str] | None = None) -> None:
     child_level = 15
     while child_level - 2 >= 1:
         bridge_level = child_level - 1
-        n = _form_level(coll, bridge_coll, child_level, bridge_level, thr, alpha, args.dry_run)
+        n = _form_level(coll, bridge_coll, child_level, bridge_level, thr, alpha,
+                        args.dry_run, settings.embed_dim)
         log.info("L%d MetaBary: children@L%d bridges@L%d → %d triads",
                  child_level - 2, child_level, bridge_level, n)
         total += n

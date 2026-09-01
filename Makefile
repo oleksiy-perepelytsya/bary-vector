@@ -23,7 +23,7 @@ test:
 	pytest --cov=lib --cov-report=term
 
 test-int:
-	pytest -m integration -v
+	pytest -m integration -v -o addopts=''
 
 STAGES = s01_parse s02_embed s03_insert_nodes s04_l15_edges s05_word_vectors \
          s06_l14_edges s07_orphan_reentry s08_metabary s09_extend s10_index

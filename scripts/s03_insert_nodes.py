@@ -109,6 +109,7 @@ def run(argv: Sequence[str] | None = None) -> None:
                     "node_type": "word",
                     "properties.word": pw.word,
                     "properties.pos": pw.pos,
+                    "properties.lang": pw.lang_code,
                 },
                 {"$set": doc},
                 upsert=True,

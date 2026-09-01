@@ -40,6 +40,33 @@ def test_parse_generates_sense_id_when_missing():
     assert senses[0].sense_id == "foo-noun-0"
 
 
+def test_parse_accepts_other_languages_when_allowed():
+    rec = {"word": "foo", "pos": "verb", "lang_code": "gl",
+           "senses": [{"glosses": ["a thing"]}]}
+    pw, senses = parse_entry(rec, langs=None)
+    assert pw.lang_code == "gl"
+    assert senses[0].lang_code == "gl"
+    # Non-English sense ids carry the language namespace.
+    assert senses[0].sense_id == "foo-verb-gl-0"
+
+
+def test_parse_langs_allowlist():
+    rec = {"word": "foo", "pos": "noun", "lang_code": "la",
+           "senses": [{"glosses": ["x"]}]}
+    assert parse_entry(rec, langs=("en",)) is None
+    pw, _ = parse_entry(rec, langs=("en", "la"))
+    assert pw is not None and pw.lang_code == "la"
+
+
+def test_parse_cross_language_sense_ids_differ():
+    def _rec(lang):
+        return {"word": "gate", "pos": "noun", "lang_code": lang,
+                "senses": [{"glosses": ["g"]}]}
+    en = parse_entry(_rec("en"))[1][0]
+    nl = parse_entry(_rec("nl"), langs=None)[1][0]
+    assert en.sense_id != nl.sense_id
+
+
 def test_embed_text_uses_gloss_plus_first_two_examples():
     rec = {"word": "foo", "pos": "n", "lang_code": "en",
            "senses": [{"glosses": ["G"],

@@ -56,23 +56,34 @@ def _sense_embed_text(gloss: str, examples: list[str]) -> str:
     return " ".join([gloss, *examples[:2]]).strip()
 
 
-def _make_sense_id(word: str, pos: str, idx: int, raw: dict[str, Any]) -> str:
+def _make_sense_id(word: str, pos: str, idx: int, raw: dict[str, Any], lang: str) -> str:
     sid = raw.get("id")
     if sid:
         return str(sid)
-    return f"{word}-{pos}-{idx}"
+    if lang == "en":
+        # Legacy scheme — keeps sense ids stable with the English-only builds.
+        return f"{word}-{pos}-{idx}"
+    # Non-English entries share surface forms across languages, so the id
+    # must carry the language namespace to stay globally unique.
+    return f"{word}-{pos}-{lang}-{idx}"
 
 
-def parse_entry(obj: dict[str, Any]) -> tuple[ParsedWord, list[ParsedSense]] | None:
+def parse_entry(
+    obj: dict[str, Any],
+    langs: tuple[str, ...] | None = ("en",),
+) -> tuple[ParsedWord, list[ParsedSense]] | None:
     """Convert one kaikki JSONL record to a ParsedWord + its ParsedSense list.
 
-    Returns ``None`` for non-English entries or entries with no senses.
+    ``langs`` is the allow-list of lang_codes (``None`` = all languages);
+    the default ``("en",)`` preserves the English-only PoC behavior.
+    Returns ``None`` for entries outside ``langs`` or entries with no senses.
     """
     word = obj.get("word")
     pos = obj.get("pos")
     if not word or not pos:
         return None
-    if (obj.get("lang_code") or "en") != "en":
+    lang_code = obj.get("lang_code") or "en"
+    if langs is not None and lang_code not in langs:
         return None
 
     raw_senses = obj.get("senses") or []
@@ -89,9 +100,10 @@ def parse_entry(obj: dict[str, Any]) -> tuple[ParsedWord, list[ParsedSense]] | N
             ParsedSense(
                 word=word,
                 pos=pos,
-                sense_id=_make_sense_id(word, pos, idx, s),
+                sense_id=_make_sense_id(word, pos, idx, s, lang_code),
                 sense_idx=idx,
                 gloss=gloss,
+                lang_code=lang_code,
                 examples=examples,
                 tags=list(s.get("tags") or []),
                 topics=list(s.get("topics") or []),

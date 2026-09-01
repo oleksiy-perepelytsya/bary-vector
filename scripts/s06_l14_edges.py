@@ -45,11 +45,13 @@ def run(argv: Sequence[str] | None = None) -> None:
     # Load all L14 word nodes that have a vector (stage 05 must have run).
     # Pre-allocate V to avoid the ~10 GB Python-list-of-floats overhead that
     # np.asarray([w["vector"] for w in words]) would create.
-    _MAX_WORDS = args.limit or 2_000_000
+    _MAX_WORDS = args.limit or coll.count_documents(
+        {"doc_type": "node", "node_type": "word", "level": 14, "vector": {"$ne": None}}
+    )
     cur = coll.find(
         {"doc_type": "node", "node_type": "word", "level": 14, "vector": {"$ne": None}},
         {"_id": 1, "vector": 1, "properties.word": 1, "properties.pos": 1,
-         "properties.relations": 1},
+         "properties.lang": 1, "properties.relations": 1},
     ).sort("_id", 1)
 
     ids: list = []
@@ -65,12 +67,13 @@ def run(argv: Sequence[str] | None = None) -> None:
     V = V[:n_words]
     log.info("loaded %d L14 word nodes with vectors", n_words)
 
-    by_key: dict[tuple[str, str], int] = {}
-    by_word: dict[str, list[int]] = {}
+    by_key: dict[tuple[str, str, str], int] = {}
+    by_word: dict[tuple[str, str], list[int]] = {}
     for i, w in enumerate(words):
         p = w["properties"]
-        by_key[(p["word"], p["pos"])] = i
-        by_word.setdefault(p["word"], []).append(i)
+        key = (p["word"], p["pos"], p.get("lang", "en"))
+        by_key[key] = i
+        by_word.setdefault((p["word"], key[2]), []).append(i)
 
     # Embed TYPE_SENTENCES once.
     embedder = get_embedder(settings)
@@ -104,10 +107,13 @@ def run(argv: Sequence[str] | None = None) -> None:
                 if rel["kind"] not in tier.kaikki_fields:
                     continue
                 # Target may exist under any pos; prefer same pos, else first match.
+                # kaikki relations stay within one language — resolve only
+                # against words of the source word's language.
                 target = rel["word"]
-                cand = by_key.get((target, w["properties"]["pos"]))
+                src_lang = w["properties"].get("lang", "en")
+                cand = by_key.get((target, w["properties"]["pos"], src_lang))
                 if cand is None:
-                    cands = by_word.get(target, [])
+                    cands = by_word.get((target, src_lang), [])
                     cand = cands[0] if cands else None
                 if cand is None or cand == i or cand in paired or i in paired:
                     continue
