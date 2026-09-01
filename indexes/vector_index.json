@@ -5,7 +5,6 @@
     "definition": {
       "fields": [
         { "type": "vector", "path": "vector",       "numDimensions": 4096, "similarity": "cosine" },
-        { "type": "vector", "path": "label_vector", "numDimensions": 4096, "similarity": "cosine" },
         { "type": "filter", "path": "doc_type" },
         { "type": "filter", "path": "level" },
         { "type": "filter", "path": "edge_type" },

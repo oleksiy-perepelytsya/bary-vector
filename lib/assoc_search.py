@@ -679,10 +679,6 @@ def render_result(
         "support_paths": record["support_paths"],
     }
 
-    label_doc = coll.find_one({"_id": node_id}, {"semantic_label": 1})
-    if label_doc and label_doc.get("semantic_label"):
-        result["semantic_label"] = label_doc["semantic_label"]
-
     steps = _materialize_steps(coll, target.path_steps, config.max_step_words)
     be_steps = [s for s in steps if s.level in (14, 15) and s.q is not None]
     if be_steps:

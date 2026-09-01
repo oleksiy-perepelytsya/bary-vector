@@ -1,6 +1,6 @@
 """BaryGraph MCP server — exposes the barygraph collection as Claude tools.
 
-Provides seventeen tools:
+Provides fifteen tools:
   context_search   — MAIN entry point: $vectorSearch + full leaf content +
                       full ancestor chain to root, merged into a single call
   find_word        — look up word nodes (all POS variants)
@@ -15,8 +15,6 @@ Provides seventeen tools:
   create_word      — insert a new L14 word node; vector computed from sense/BE ids (s05 formula)
   create_edge      — insert a BaryEdge between two same-level nodes
   create_structure_meta_bary — form an SMB triad; allows already-parented CMs/bridge
-  scan_unlabeled   — paginated MB scan for docs missing semantic_label
-  set_label        — write semantic_label + label_vector back to an MB
   associative_search     — search THROUGH the graph, answer WITH destinations:
                            bounded multi-branch upward propagation, convergence
                            grouping, novelty, and top-k high-level coordinates
@@ -713,7 +711,6 @@ def _edge_context(doc: dict[str, Any], max_leaves: int) -> dict[str, Any]:
     # match one. Without this, one broad hit can blow the tool's response budget.
     leaves = _leaf_nodes(doc["_id"], cap=max(max_leaves * 5, 300))
     if level is not None and level <= 13:
-        ctx["semantic_label"] = doc.get("semantic_label")
         ctx["triad"] = _triad_of(doc["_id"], doc["cm1_id"], doc["cm2_id"], doc.get("bridge_id"))
     else:
         ctx["edge_type"] = doc.get("edge_type")
@@ -757,7 +754,7 @@ def _ancestry_chain(
     for _ in range(max_levels):
         pdoc = _coll.find_one(
             {"_id": current_id},
-            {"level": 1, "edge_type": 1, "semantic_label": 1, "parent_edge_id": 1,
+            {"level": 1, "edge_type": 1, "parent_edge_id": 1,
              "cm1_id": 1, "cm2_id": 1, "bridge_id": 1, "connection_strength": 1},
         )
         if not pdoc:
@@ -777,7 +774,6 @@ def _ancestry_chain(
             "connection_strength": pdoc.get("connection_strength"),
         }
         if pdoc.get("level") is not None and pdoc["level"] <= 13:
-            step["semantic_label"] = pdoc.get("semantic_label")
             step["triad_words"] = _triad_of(
                 pdoc["_id"], pdoc["cm1_id"], pdoc["cm2_id"],
                 pdoc.get("bridge_id"),
@@ -816,8 +812,8 @@ async def context_search(
       - word node   → properties (ipa/etymology/forms) + all its senses (gloss list)
       - sense node  → gloss/tags/topics
       - L14/L15 BE  → edge_type + every sense/word reachable underneath (leaf_nodes)
-      - MetaBary (L10-L13) → semantic_label + triad (child1/child2/bridge word
-        sets) + every sense/word reachable underneath (leaf_nodes)
+      - MetaBary (L10-L13) → triad (child1/child2/bridge word sets) +
+        every sense/word reachable underneath (leaf_nodes)
     Use this first for any "find things related to X" question; reach for
     semantic_search/leaf_nodes/traverse_up directly only when you need a raw
     dump, a full multi-level ancestry chain, or to page through more hits than
@@ -832,7 +828,7 @@ async def context_search(
       broad L10 MetaBary doesn't dump its whole subtree (max 200). Totals are
       still reported via sense_count/word_count even when truncated.
     include_ancestry: when True (default), also includes the full ancestor_chain
-      from each hit up to the root — semantic_label/triad for MB ancestors,
+      from each hit up to the root — triad for MB ancestors,
       edge_type/leaf_words for BE ancestors — so you see everything the hit
       belongs to, all the way up, without a separate traverse_up call. This
       is cheap because parent_edge_id is a single linear chain (one parent
@@ -1306,55 +1302,6 @@ def _create_structure_meta_bary_body(
     })
 
 
-@_write_tool
-async def scan_unlabeled(level: int, limit: int = 50, offset: int = 0) -> str:
-    """Return MetaBary docs at the given level that have no semantic_label yet.
-
-    Designed for batch labelling workflows: call repeatedly with increasing
-    offset to page through all unlabeled MBs. Each doc includes its triad
-    structure so the caller has everything needed to generate a label without
-    a second round-trip.
-
-    level:  10–13 (MetaBary range).
-    limit:  docs per page, max 100 (default 50).
-    offset: number of docs to skip (for pagination).
-
-    Returns a summary header plus the list of docs:
-      { "level": 13, "offset": 0, "returned": 50, "items": [...] }
-    """
-    return await _run_thr(_scan_unlabeled_body, level, limit, offset)
-
-
-def _scan_unlabeled_body(level: int, limit: int, offset: int) -> str:
-    if not (10 <= level <= 13):
-        return "level must be between 10 and 13 (MetaBary range)."
-    limit = min(max(limit, 1), 100)
-
-    docs = list(_coll.find(
-        {"doc_type": "baryedge", "level": level, "semantic_label": {"$exists": False}},
-        {"cm1_id": 1, "cm2_id": 1, "connection_strength": 1,
-         "accumulated_weight": 1, "parent_edge_id": 1},
-    ).skip(offset).limit(limit))
-
-    items = []
-    for doc in docs:
-        mb_id = doc["_id"]
-        items.append({
-            "id": str(mb_id),
-            "connection_strength": doc.get("connection_strength"),
-            "accumulated_weight": doc.get("accumulated_weight"),
-            "has_parent": doc.get("parent_edge_id") is not None,
-            "triad": _triad_of(mb_id, doc["cm1_id"], doc["cm2_id"], doc.get("bridge_id")),
-        })
-
-    return _fmt({
-        "level": level,
-        "offset": offset,
-        "returned": len(items),
-        "items": items,
-    })
-
-
 def _validate_assoc_config(
     seed_top_k: int = 20,
     bridge_top_k: int = 12,
@@ -1545,66 +1492,6 @@ async def associative_progressive(
         )
     )
     return _fmt(payload)
-
-
-@_write_tool
-async def set_label(
-    edge_id: str, label: str, label_vector: list[float], model: str
-) -> str:
-    """Write a semantic label and its embedding vector back to a MetaBary document.
-
-    edge_id:      24-char hex ObjectId of the MetaBary (level ≤ 13).
-    label:        Short semantic phrase describing the MB cluster (e.g.
-                  "Toxic plants that kill livestock").
-    label_vector: 768-dim embedding of the label text, produced by the same
-                  nomic-embed-text model used for all other vectors so it is
-                  searchable via the existing $vectorSearch index.
-    model:        Name of the model that generated the label (for provenance).
-
-    Stores: semantic_label, label_vector, label_model, label_updated_at.
-    Returns a confirmation with the stored values (vector omitted for brevity).
-    """
-    return await _run_thr(
-        _set_label_body, edge_id, label, label_vector, model
-    )
-
-
-def _set_label_body(
-    edge_id: str, label: str, label_vector: list[float], model: str,
-) -> str:
-    try:
-        oid = ObjectId(edge_id)
-    except Exception:
-        return f"Invalid edge_id '{edge_id}' — must be a 24-char hex ObjectId string."
-
-    doc = _coll.find_one({"_id": oid}, {"doc_type": 1, "level": 1})
-    if not doc:
-        return f"No document with id {edge_id}."
-    if doc.get("doc_type") != "baryedge":
-        return f"Document {edge_id} is not a baryedge (doc_type={doc.get('doc_type')!r})."
-    if (doc.get("level") or 99) > 13:
-        return (f"Document {edge_id} is at level {doc.get('level')} — "
-                "set_label is for MetaBary (level ≤ 13) only.")
-    if len(label_vector) != 768:
-        return f"label_vector must be 768-dimensional, got {len(label_vector)}."
-
-    now = datetime.now(timezone.utc)
-    _coll.update_one(
-        {"_id": oid},
-        {"$set": {
-            "semantic_label": label,
-            "label_vector": label_vector,
-            "label_model": model,
-            "label_updated_at": now,
-        }},
-    )
-    return _fmt({
-        "ok": True,
-        "edge_id": edge_id,
-        "semantic_label": label,
-        "label_model": model,
-        "label_updated_at": now.isoformat(),
-    })
 
 
 def _warmup_engine() -> None:
