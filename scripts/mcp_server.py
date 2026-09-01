@@ -188,6 +188,24 @@ def _fmt(obj: Any) -> str:
     return json.dumps(obj, indent=2, default=str)
 
 
+_MAX_TEXT_LEN = 512
+
+
+def _validate_text(value: str, name: str) -> str | None:
+    """Return an error message if ``value`` is empty/whitespace-only or over-long, else None.
+
+    Guards only absurd inputs (blank or oversized payloads) — no symbol/character
+    filtering: the multilingual corpus legitimately contains words with dots,
+    apostrophes, hyphens and diacritics, and every user string is bound as a
+    parameterized filter value, never interpolated into a query.
+    """
+    if not value.strip():
+        return f"{name} must be a non-empty string."
+    if len(value) > _MAX_TEXT_LEN:
+        return f"{name} is too long (max {_MAX_TEXT_LEN} characters)."
+    return None
+
+
 def _triad_of(
     mb_id: ObjectId,
     cm1_id: ObjectId,
@@ -256,6 +274,9 @@ def _triad_of(
 @mcp.tool()
 def find_word(word: str) -> str:
     """Find a word in the graph. Returns all POS variants with edge counts and etymology."""
+    err = _validate_text(word, "word")
+    if err:
+        return err
     docs = list(_coll.find(
         {"doc_type": "node", "node_type": "word", "properties.word": word},
         {"properties": 1, "parent_edge_id": 1},
@@ -302,6 +323,9 @@ def word_senses(word: str, include_dois: bool = False) -> str:
     provenance) — stored directly on the sense node, so this adds no extra
     lookup. Most senses (plain kaikki dictionary data) have an empty list.
     """
+    err = _validate_text(word, "word")
+    if err:
+        return err
     projection = {
         "properties.sense_idx": 1, "properties.pos": 1, "properties.gloss": 1,
         "properties.tags": 1, "properties.topics": 1, "parent_edge_id": 1,
@@ -339,6 +363,9 @@ def word_edges(word: str, pos: str = "") -> str:
     Optionally filter by POS (noun, verb, adj, …).
     Returns edge_type, partner word, q, and accumulated_weight.
     """
+    err = _validate_text(word, "word")
+    if err:
+        return err
     query: dict[str, Any] = {
         "doc_type": "node", "node_type": "word", "properties.word": word,
     }
@@ -439,11 +466,14 @@ async def traverse_up(edge_id: str, max_levels: int = 6) -> str:
     max_levels is reached / parent is null). For MetaBary levels (≤13) each
     step includes the full triad structure (child1, child2, bridge with their
     word sets); for L14/L15 BaryEdges shows flat leaf words and edge_type.
+
+    max_levels: how many steps up to walk (max 20; clamped to [1, 20]).
     """
     return await _run_thr(_traverse_up_body, edge_id, max_levels)
 
 
 def _traverse_up_body(edge_id: str, max_levels: int) -> str:
+    max_levels = min(max(max_levels, 1), 20)
     try:
         current_id: Any = ObjectId(edge_id)
     except Exception:
@@ -549,7 +579,7 @@ def _sample_metabary_body(level: int, n: int, with_parent: bool) -> str:
 
 
 @mcp.tool()
-async def leaf_nodes(edge_id: str) -> str:
+async def leaf_nodes(edge_id: str, max_leaves: int | None = None) -> str:
     """Get all L15 sense nodes and L14 word nodes reachable from a BE or MB.
 
     Traverses the full CM lineage downward to leaf nodes and returns the
@@ -560,18 +590,24 @@ async def leaf_nodes(edge_id: str) -> str:
     Use this to build full search context for a MB or BE found via
     semantic_search or sample_metabary — see every sense and word the
     edge encodes.
+
+    max_leaves: optional cap on the number of senses+words returned (bounds the
+      traversal itself, not just the returned lists — useful for near-root MBs
+      that fan out to a huge fraction of the corpus). Default: no cap (full
+      subtree dump).
     """
-    return await _run_thr(_leaf_nodes_body, edge_id)
+    return await _run_thr(_leaf_nodes_body, edge_id, max_leaves)
 
 
-def _leaf_nodes_body(edge_id: str) -> str:
+def _leaf_nodes_body(edge_id: str, max_leaves: int | None) -> str:
     try:
         oid = ObjectId(edge_id)
     except Exception:
         return f"Invalid edge_id '{edge_id}' — must be a 24-char hex ObjectId string."
     if not _coll.find_one({"_id": oid}, {"_id": 1}):
         return f"No document with id {edge_id}."
-    result = _leaf_nodes(oid)
+    cap = max(max_leaves, 1) if max_leaves is not None else None
+    result = _leaf_nodes(oid, cap=cap)
     result["edge_id"] = edge_id
     result["sense_count"] = len(result["senses"])
     result["word_count"] = len(result["words"])
@@ -586,6 +622,7 @@ async def semantic_search(
 
     doc_type: 'baryedge' searches relationship vectors (default);
               'node' searches word/sense vectors.
+    top_k: number of hits to return (max 20).
     Requires s10_index to have completed. The HNSW index may take several
     minutes to build after creation.
     include_dois: when True, attach each hit's DOI(s) — academic-batch source
@@ -606,6 +643,13 @@ async def semantic_search(
 def _semantic_search_body(
     query: str, doc_type: str, top_k: int, include_dois: bool
 ) -> str:
+    err = _validate_text(query, "query")
+    if err:
+        return err
+    if doc_type not in ("node", "baryedge"):
+        return "doc_type must be 'node' or 'baryedge'."
+    top_k = min(max(top_k, 1), 20)
+
     try:
         embedder = get_embedder(_settings)
         qv = embedder.embed([query])[0].tolist()
@@ -857,6 +901,9 @@ def _context_search_body(
     query: str, doc_type: str, top_k: int, max_leaves: int,
     include_ancestry: bool,
 ) -> str:
+    err = _validate_text(query, "query")
+    if err:
+        return err
     if doc_type not in ("node", "baryedge", "any"):
         return "doc_type must be 'node', 'baryedge', or 'any'."
     top_k = min(max(top_k, 1), 20)
