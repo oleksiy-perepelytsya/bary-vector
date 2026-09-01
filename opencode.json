@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "barygraph": {
+      "type": "remote",
+      "url": "https://lodge-adding-hit-scheme.trycloudflare.com/mcp",
+      "enabled": true
+    }
+  }
+}

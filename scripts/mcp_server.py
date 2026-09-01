@@ -1,6 +1,6 @@
 """BaryGraph MCP server — exposes the barygraph collection as Claude tools.
 
-Provides fifteen tools:
+Provides seventeen tools:
   context_search   — MAIN entry point: $vectorSearch + full leaf content +
                       full ancestor chain to root, merged into a single call
   find_word        — look up word nodes (all POS variants)
@@ -17,6 +17,11 @@ Provides fifteen tools:
   create_structure_meta_bary — form an SMB triad; allows already-parented CMs/bridge
   scan_unlabeled   — paginated MB scan for docs missing semantic_label
   set_label        — write semantic_label + label_vector back to an MB
+  associative_search     — search THROUGH the graph, answer WITH destinations:
+                           bounded multi-branch upward propagation, convergence
+                           grouping, novelty, and top-k high-level coordinates
+  associative_progressive — session-based discover -> expand -> compare -> propose
+                           for BG Progressive / SMB construction workflows
 
 Transports:
   stdio (default) — Claude Code / Claude Desktop:
@@ -37,23 +42,41 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+import anyio.to_thread
+import numpy as np
 from bson import ObjectId
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pymongo.errors import PyMongoError
 
-import numpy as np
-
-from lib.bary_vec import TYPE_SENTENCES, compute_bary_vec, compute_metabary_vec, cosine, level_factor, normalize as _norm_vec
+from lib.assoc_search import (
+    AssocConfig,
+    _config_from_kwargs,
+    progressive,
+    run_search,
+)
+from lib.bary_vec import (
+    TYPE_SENTENCES,
+    compute_bary_vec,
+    compute_metabary_vec,
+    cosine,
+    level_factor,
+)
+from lib.bary_vec import normalize as _norm_vec
 from lib.config import Settings
-from lib.db import cm_leaf_words, get_collection, vector_search
-from lib.doi_bridge import dois_for_node, dois_for_nodes, get_bridge_collection
+from lib.db import cm_leaf_words, ensure_indexes, get_collection, vector_search
 from lib.docs import baryedge as _make_baryedge
 from lib.docs import metabary as _make_metabary
+from lib.doi_bridge import dois_for_node, dois_for_nodes, get_bridge_collection
 from lib.embed import get_embedder
 from lib.log import setup_logging
 
 # -- helpers ------------------------------------------------------------------
+
+
+def _run_thr(fn, *args):
+    """Run a blocking tool body in the worker pool (default thread limiter)."""
+    return anyio.to_thread.run_sync(fn, *args)
 
 
 def _leaf_nodes(be_id: Any, cap: int | None = None) -> dict[str, Any]:
@@ -151,11 +174,14 @@ mcp = FastMCP(
         "word_senses/word_edges for exact-string lookups rather than semantic ones."
     ),
     transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
+        enable_dns_rebinding_protection=False,
         allowed_hosts=_allowed_hosts,
         allowed_origins=_allowed_origins,
     ),
 )
+
+_read_only = os.environ.get("MCP_READ_ONLY", "0").lower() in ("1", "true", "yes")
+_write_tool = (lambda f: f) if _read_only else mcp.tool()
 
 
 def _fmt(obj: Any) -> str:
@@ -301,7 +327,7 @@ def word_senses(word: str, include_dois: bool = False) -> str:
         for d in docs
     ]
     if include_dois:
-        for r, d in zip(results, docs):
+        for r, d in zip(results, docs, strict=True):
             r["dois"] = d["properties"].get("doi", [])
     return _fmt(results)
 
@@ -406,7 +432,7 @@ def edge_info(edge_id: str, include_dois: bool = False) -> str:
 
 
 @mcp.tool()
-def traverse_up(edge_id: str, max_levels: int = 6) -> str:
+async def traverse_up(edge_id: str, max_levels: int = 6) -> str:
     """Walk the parent_edge_id chain upward from any BE or MB.
 
     Returns the ancestry chain from the starting edge to the root (or until
@@ -414,6 +440,10 @@ def traverse_up(edge_id: str, max_levels: int = 6) -> str:
     step includes the full triad structure (child1, child2, bridge with their
     word sets); for L14/L15 BaryEdges shows flat leaf words and edge_type.
     """
+    return await _run_thr(_traverse_up_body, edge_id, max_levels)
+
+
+def _traverse_up_body(edge_id: str, max_levels: int) -> str:
     try:
         current_id: Any = ObjectId(edge_id)
     except Exception:
@@ -435,7 +465,9 @@ def traverse_up(edge_id: str, max_levels: int = 6) -> str:
             "connection_strength": doc.get("connection_strength"),
         }
         if level is not None and level <= 13:
-            step["triad"] = _triad_of(doc["_id"], doc["cm1_id"], doc["cm2_id"], doc.get("bridge_id"))
+            step["triad"] = _triad_of(
+                doc["_id"], doc["cm1_id"], doc["cm2_id"], doc.get("bridge_id")
+            )
         else:
             step["edge_type"] = doc.get("edge_type")
             step["leaf_words"] = sorted(cm_leaf_words(_coll, doc["_id"]))
@@ -449,7 +481,7 @@ def traverse_up(edge_id: str, max_levels: int = 6) -> str:
 
 
 @mcp.tool()
-def sample_metabary(level: int, n: int = 5, with_parent: bool = True) -> str:
+async def sample_metabary(level: int, n: int = 5, with_parent: bool = True) -> str:
     """Sample N random MetaBary docs at the given level with full triad structure.
 
     level: 10–13 (13 = closest to individual senses, 10 = most abstract).
@@ -463,6 +495,12 @@ def sample_metabary(level: int, n: int = 5, with_parent: bool = True) -> str:
     Each branch is explained as the set of words reachable through it, so you
     can read a MetaBary as "child1-words ↔ child2-words via bridge-words".
     """
+    return await _run_thr(
+        _sample_metabary_body, level, n, with_parent
+    )
+
+
+def _sample_metabary_body(level: int, n: int, with_parent: bool) -> str:
     if not (10 <= level <= 13):
         return "level must be between 10 and 13 (MetaBary range)."
     n = min(max(n, 1), 1000)
@@ -501,14 +539,17 @@ def sample_metabary(level: int, n: int = 5, with_parent: bool = True) -> str:
                     "level": pdoc.get("level"),
                     "connection_strength": pdoc.get("connection_strength"),
                     "has_grandparent": pdoc.get("parent_edge_id") is not None,
-                    "triad": _triad_of(pdoc["_id"], pdoc["cm1_id"], pdoc["cm2_id"], pdoc.get("bridge_id")),
+                    "triad": _triad_of(
+                        pdoc["_id"], pdoc["cm1_id"], pdoc["cm2_id"],
+                        pdoc.get("bridge_id"),
+                    ),
                 }
         results.append(entry)
     return _fmt(results)
 
 
 @mcp.tool()
-def leaf_nodes(edge_id: str) -> str:
+async def leaf_nodes(edge_id: str) -> str:
     """Get all L15 sense nodes and L14 word nodes reachable from a BE or MB.
 
     Traverses the full CM lineage downward to leaf nodes and returns the
@@ -520,6 +561,10 @@ def leaf_nodes(edge_id: str) -> str:
     semantic_search or sample_metabary — see every sense and word the
     edge encodes.
     """
+    return await _run_thr(_leaf_nodes_body, edge_id)
+
+
+def _leaf_nodes_body(edge_id: str) -> str:
     try:
         oid = ObjectId(edge_id)
     except Exception:
@@ -534,7 +579,7 @@ def leaf_nodes(edge_id: str) -> str:
 
 
 @mcp.tool()
-def semantic_search(
+async def semantic_search(
     query: str, doc_type: str = "baryedge", top_k: int = 10, include_dois: bool = False
 ) -> str:
     """Semantic similarity search against the BaryGraph vector index (mongot).
@@ -549,6 +594,18 @@ def semantic_search(
     (union of their constituents' DOIs). Empty for hits built entirely from
     plain kaikki dictionary data.
     """
+    try:
+        return await _run_thr(
+            _semantic_search_body, query, doc_type, top_k, include_dois
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        _log.exception("semantic_search failed for query=%r", query)
+        return _fmt({"status": "error", "query": query, "message": str(e)})
+
+
+def _semantic_search_body(
+    query: str, doc_type: str, top_k: int, include_dois: bool
+) -> str:
     try:
         embedder = get_embedder(_settings)
         qv = embedder.embed([query])[0].tolist()
@@ -636,7 +693,10 @@ def _node_context(doc: dict[str, Any], max_leaves: int) -> dict[str, Any]:
             {"properties.pos": 1, "properties.gloss": 1, "properties.sense_idx": 1},
         ).sort("properties.sense_idx", 1).limit(max_leaves))
         ctx["senses"] = [
-            {"id": str(s["_id"]), "pos": s["properties"].get("pos"), "gloss": s["properties"].get("gloss", "")}
+            {
+                "id": str(s["_id"]), "pos": s["properties"].get("pos"),
+                "gloss": s["properties"].get("gloss", ""),
+            }
             for s in sense_docs
         ]
     return ctx
@@ -716,7 +776,10 @@ def _ancestry_chain(
         }
         if pdoc.get("level") is not None and pdoc["level"] <= 13:
             step["semantic_label"] = pdoc.get("semantic_label")
-            step["triad_words"] = _triad_of(pdoc["_id"], pdoc["cm1_id"], pdoc["cm2_id"], pdoc.get("bridge_id"))
+            step["triad_words"] = _triad_of(
+                pdoc["_id"], pdoc["cm1_id"], pdoc["cm2_id"],
+                pdoc.get("bridge_id"),
+            )
         else:
             step["edge_type"] = pdoc.get("edge_type")
             leaf_words_cap = 200
@@ -736,7 +799,7 @@ def _ancestry_chain(
 
 
 @mcp.tool()
-def context_search(
+async def context_search(
     query: str,
     doc_type: str = "any",
     top_k: int = 5,
@@ -782,6 +845,20 @@ def context_search(
       occurrences collapse to {"id", "level", "already_shown_elsewhere_in_response":
       true} instead of repeating the same triad/leaf-word content.
     """
+    try:
+        return await _run_thr(
+            _context_search_body, query, doc_type, top_k, max_leaves,
+            include_ancestry,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        _log.exception("context_search failed for query=%r", query)
+        return _fmt({"status": "error", "query": query, "message": str(e)})
+
+
+def _context_search_body(
+    query: str, doc_type: str, top_k: int, max_leaves: int,
+    include_ancestry: bool,
+) -> str:
     if doc_type not in ("node", "baryedge", "any"):
         return "doc_type must be 'node', 'baryedge', or 'any'."
     top_k = min(max(top_k, 1), 20)
@@ -879,8 +956,8 @@ _EDGE_TYPE_Q_KEY: dict[str, str] = {
 }
 
 
-@mcp.tool()
-def create_sense(
+@_write_tool
+async def create_sense(
     word: str,
     pos: str,
     gloss: str,
@@ -899,6 +976,16 @@ def create_sense(
 
     Returns the new document's _id.
     """
+    return await _run_thr(
+        _create_sense_body,
+        word, pos, gloss, examples or [], tags or [], topics or [],
+    )
+
+
+def _create_sense_body(
+    word: str, pos: str, gloss: str,
+    examples: list[str], tags: list[str], topics: list[str],
+) -> str:
     examples = examples or []
     tags = tags or []
     topics = topics or []
@@ -938,8 +1025,8 @@ def create_sense(
     return _fmt({"ok": True, "id": str(result.inserted_id), "label": doc["label"]})
 
 
-@mcp.tool()
-def create_word(
+@_write_tool
+async def create_word(
     word: str,
     pos: str,
     source_ids: list[str],
@@ -960,6 +1047,14 @@ def create_word(
 
     Returns the new word node's _id.
     """
+    return await _run_thr(
+        _create_word_body, word, pos, source_ids, ipa, etymology
+    )
+
+
+def _create_word_body(
+    word: str, pos: str, source_ids: list[str], ipa: str, etymology: str,
+) -> str:
     if not source_ids:
         return "source_ids must not be empty — provide at least one sense or BE id."
 
@@ -982,7 +1077,7 @@ def create_word(
         vecs.append(np.asarray(d["vector"], dtype=np.float32))
 
     from lib.bary_vec import normalize
-    word_vec = normalize(sum(vecs)).tolist()  # normalized centroid — matches s05 formula
+    word_vec = normalize(np.sum(vecs, axis=0)).tolist()  # normalized centroid — matches s05 formula
 
     ts = datetime.now(timezone.utc)
     doc: dict[str, Any] = {
@@ -1011,8 +1106,8 @@ def create_word(
                  "sources_used": len(vecs)})
 
 
-@mcp.tool()
-def create_edge(
+@_write_tool
+async def create_edge(
     cm1_id: str,
     cm2_id: str,
     edge_type: str | None = None,
@@ -1031,6 +1126,14 @@ def create_edge(
     q defaults to the pipeline q_seed for the edge_type, or 1.0 when edge_type is None.
     Returns the new edge's _id.
     """
+    return await _run_thr(
+        _create_edge_body, cm1_id, cm2_id, edge_type, q
+    )
+
+
+def _create_edge_body(
+    cm1_id: str, cm2_id: str, edge_type: str | None, q: float,
+) -> str:
     if edge_type is not None and edge_type not in TYPE_SENTENCES:
         return (f"edge_type must be one of: {', '.join(TYPE_SENTENCES)}"
                 " — or omit entirely for a type-neutral L15 BE.")
@@ -1092,8 +1195,10 @@ def create_edge(
     })
 
 
-@mcp.tool()
-def create_structure_meta_bary(cm1_id: str, cm2_id: str, bridge_id: str) -> str:
+@_write_tool
+async def create_structure_meta_bary(
+    cm1_id: str, cm2_id: str, bridge_id: str
+) -> str:
     """Create a Structure MetaBary (SMB) triad — cross-cutting, non-exclusive grouping.
 
     SMB follows the same vector and level rules as a pipeline MetaBary (s08)
@@ -1113,6 +1218,14 @@ def create_structure_meta_bary(cm1_id: str, cm2_id: str, bridge_id: str) -> str:
     Returns the new SMB's _id, level, q_mb_raw, accumulated_weight,
     and the cosine between the two children (pipeline threshold is 0.90).
     """
+    return await _run_thr(
+        _create_structure_meta_bary_body, cm1_id, cm2_id, bridge_id
+    )
+
+
+def _create_structure_meta_bary_body(
+    cm1_id: str, cm2_id: str, bridge_id: str,
+) -> str:
     if len({cm1_id, cm2_id, bridge_id}) != 3:
         return "cm1_id, cm2_id, and bridge_id must all be distinct."
     try:
@@ -1167,12 +1280,12 @@ def create_structure_meta_bary(cm1_id: str, cm2_id: str, bridge_id: str) -> str:
         oid1, oid2,
         level=mb_level,           # child_level - 2; same rule as pipeline MB
         vector=vec,               # normalize(w1·v1 + w2·v2 + w3·v_bridge)
-        q_mb_raw=q_mb_raw,        # Born rule: w3² / √(w1⁴+w2⁴+w3⁴); stored as connection_strength
-        accumulated_weight=acc_w, # q_mb_raw × level_factor; available for future upward propagation
+        q_mb_raw=q_mb_raw,  # Born rule: w3² / √(w1⁴+w2⁴+w3⁴); stored as connection_strength
+        accumulated_weight=acc_w,  # q_mb_raw × level_factor; available for upward propagation
     )
     # SMB-specific fields layered on top of the standard metabary schema
     doc["source"] = "structural"  # distinguishes SMB from pipeline MBs ({source: 'structural'})
-    doc["bridge_id"] = oid3       # explicit bridge ref — bridge is not re-parented so reverse-lookup fails
+    doc["bridge_id"] = oid3  # explicit bridge ref — bridge not re-parented so reverse-lookup fails
 
     result = _coll.insert_one(doc)
     return _fmt({
@@ -1191,8 +1304,8 @@ def create_structure_meta_bary(cm1_id: str, cm2_id: str, bridge_id: str) -> str:
     })
 
 
-@mcp.tool()
-def scan_unlabeled(level: int, limit: int = 50, offset: int = 0) -> str:
+@_write_tool
+async def scan_unlabeled(level: int, limit: int = 50, offset: int = 0) -> str:
     """Return MetaBary docs at the given level that have no semantic_label yet.
 
     Designed for batch labelling workflows: call repeatedly with increasing
@@ -1207,6 +1320,10 @@ def scan_unlabeled(level: int, limit: int = 50, offset: int = 0) -> str:
     Returns a summary header plus the list of docs:
       { "level": 13, "offset": 0, "returned": 50, "items": [...] }
     """
+    return await _run_thr(_scan_unlabeled_body, level, limit, offset)
+
+
+def _scan_unlabeled_body(level: int, limit: int, offset: int) -> str:
     if not (10 <= level <= 13):
         return "level must be between 10 and 13 (MetaBary range)."
     limit = min(max(limit, 1), 100)
@@ -1236,8 +1353,202 @@ def scan_unlabeled(level: int, limit: int = 50, offset: int = 0) -> str:
     })
 
 
+def _validate_assoc_config(
+    seed_top_k: int = 20,
+    bridge_top_k: int = 12,
+    result_top_k: int = 5,
+    max_hops: int = 4,
+    target_levels: list[int] | None = None,
+    min_convergence: int = 1,
+    beam_decay: float = 0.75,
+    novelty_weight: float = 0.2,
+    convergence_weight: float = 0.4,
+    q_weight_leaf: float = 0.5,
+    q_weight_high: float = 0.05,
+    return_paths: bool = True,
+    include_dois: bool = False,
+) -> AssocConfig:
+    """Build + validate an AssocConfig from tool params (shared by both tools)."""
+    kwargs = dict(
+        seed_top_k=seed_top_k, bridge_top_k=bridge_top_k,
+        result_top_k=result_top_k, max_hops=max_hops,
+        target_levels=tuple(target_levels or (12, 11, 10)),
+        min_convergence=min_convergence, beam_decay=beam_decay,
+        novelty_weight=novelty_weight, convergence_weight=convergence_weight,
+        q_weight_leaf=q_weight_leaf, q_weight_high=q_weight_high,
+        return_paths=return_paths, include_dois=include_dois,
+    )
+    return _config_from_kwargs(**kwargs)
+
+
 @mcp.tool()
-def set_label(edge_id: str, label: str, label_vector: list[float], model: str) -> str:
+async def associative_search(
+    query: str,
+    seed_top_k: int = 20,
+    bridge_top_k: int = 12,
+    result_top_k: int = 5,
+    max_hops: int = 4,
+    target_levels: list[int] | None = None,
+    min_convergence: int = 1,
+    beam_decay: float = 0.75,
+    novelty_weight: float = 0.2,
+    convergence_weight: float = 0.4,
+    q_weight_leaf: float = 0.5,
+    q_weight_high: float = 0.05,
+    return_paths: bool = True,
+    include_dois: bool = False,
+) -> str:
+    """Associative search: search THROUGH the graph, answer WITH destinations.
+
+    Given a cue, run bounded multi-branch propagation upward from resolved
+    seeds, preserve strong / divergent / convergent-low-weight paths, accumulate
+    high-level MetaBary coordinates, and return the strongest results with the
+    support paths that produced them — instead of forcing the LLM to inspect
+    the whole activated area.
+
+    Parameters (default → what it controls):
+      query (required)      The cue; embedded and used as the seed vector.
+      seed_top_k = 20       Breadth at seed resolution (word/sense nodes + L15/L14
+                            BaryEdges, split roughly half/half). Cap 200.
+      bridge_top_k = 12     Beam width: how many paths may continue per hop,
+                            split across three channels (strong / divergent /
+                            convergent-low). Higher = wider recall, slower. Cap 100.
+      result_top_k = 5      Number of final high-level associative coordinates
+                            returned. Cap 30.
+      max_hops = 4          Maximum upward steps from the seeds (allowed 1-8).
+                            The graph's structure may exhaust earlier;
+                            deepest reach is reported as highest_reached_level.
+      target_levels=[12,11,10]  MetaBary levels to report (each 1-13; empty list =
+                            any level). Levels with no coordinate reached are skipped.
+      min_convergence = 1   Minimum number of independent support paths a
+                            coordinate needs to be returned (a convergence filter).
+      beam_decay = 0.75     Per-hop energy multiplier applied to q along a path
+                            (path energy E).
+      convergence_weight = 0.4  Weight of convergence C in the high-level score.
+      novelty_weight = 0.2  Weight of novelty N (how unlike the direct
+                            neighbourhood the coordinate is).
+      q_weight_leaf = 0.5   Weight of edge q in the LEAF-level seed score:
+                            S_leaf = 0.3*R + q_weight_leaf*q + 0.2*E.
+      q_weight_high = 0.05  Weight of path energy in the HIGH-level score:
+                            S = alpha*R + convergence_weight*C + novelty_weight*N
+                            + q_weight_high*E, where alpha = 1 - the other weights.
+      return_paths = true   Include compact support paths + path_steps per result.
+      include_dois = false  Attach academic-batch source DOIs to each hit
+                            (extra reverse-index lookup; skip unless you need
+                            provenance).
+
+    Returns status 'ok' with results, 'no_seed' (no graph seed), or
+    'no_target' (seeds found but none reached the requested target levels).
+    Each result includes the coordinate words, score/convergence/novelty,
+    the triggering leaf structure, compact support paths, and a 'why' tree
+    compressing the route. Summary text is included for direct LLM display.
+    """
+    try:
+        config = _validate_assoc_config(
+            seed_top_k=seed_top_k, bridge_top_k=bridge_top_k,
+            result_top_k=result_top_k, max_hops=max_hops,
+            target_levels=target_levels, min_convergence=min_convergence,
+            beam_decay=beam_decay, novelty_weight=novelty_weight,
+            convergence_weight=convergence_weight, q_weight_leaf=q_weight_leaf,
+            q_weight_high=q_weight_high, return_paths=return_paths,
+            include_dois=include_dois,
+        )
+    except ValueError as e:
+        return _fmt({"status": "error", "query": query, "message": str(e)})
+
+    payload = await _run_thr(
+        lambda: run_search(
+            _coll, get_embedder(_settings), query, config,
+            bridge_coll=(_bridge_coll if config.include_dois else None),
+        )
+    )
+    return _fmt(payload)
+
+
+@mcp.tool()
+async def associative_progressive(
+    session_id: str,
+    stage: str,
+    query: str = "",
+    selected_ids: list[str] | None = None,
+    seed_top_k: int = 20,
+    bridge_top_k: int = 12,
+    result_top_k: int = 8,
+    max_hops: int = 4,
+    target_levels: list[int] | None = None,
+    min_convergence: int = 1,
+    beam_decay: float = 0.75,
+    novelty_weight: float = 0.2,
+    convergence_weight: float = 0.4,
+    q_weight_leaf: float = 0.5,
+    q_weight_high: float = 0.05,
+) -> str:
+    """Session-based progressive associative search: discover -> expand -> compare -> propose.
+
+    Lets a workflow guide the search interactively instead of taking one
+    shot blindly:
+
+      discover  — run the full search for `query`; returns the activated area:
+                  every ranked high-level coordinate (compact) so the caller
+                  can pick which deserve deeper inspection.
+      expand    — for selected_ids: triad structure (child1/child2/bridge word
+                  sets), strongest leaf support, competing siblings, and
+                  alternate cross-links for each chosen coordinate.
+      compare   — for selected_ids (>=2): pairwise cosine, word overlap,
+                  shared root origins, and shared triggering edge.
+      propose   — for selected_ids (>=2, same level): an SMB-ready proposal
+                  packet (cm1/cm2 at child_level, a level child_level-1 bridge
+                  candidate via centroid vector search, expected child cosine,
+                  convergence stats, academic provenance, prior structural SMBs
+                  touching the region). The packet is NOT created — call
+                  create_structure_meta_bary with (cm1_id, cm2_id, bridge_id).
+
+    Sessions are held in memory (process-local, LRU-capped at 32); they are
+    lost if the server restarts. Re-running discover on an existing session_id
+    replaces it. Query is required for stage=discover only.
+
+    Parameters (default → what it controls; same scoring/search knobs as
+    associative_search — see its description for meanings):
+      session_id (required)  Names the in-memory session; must be re-used
+                             across stage calls. First call per session MUST
+                             be discover (others error "no session").
+      stage (required)       discover | expand | compare | propose (above).
+      query = ""             The cue — required for discover only.
+      selected_ids = null    Coordinate ids from the previous discover to
+                             drill into (expand: >=1, compare/propose: >=2).
+      result_top_k = 8       Coordinates kept from discover for later stages
+                             (note: default 8 here, not 5).
+      seed_top_k = 20, bridge_top_k = 12, max_hops = 4,
+      target_levels=[12,11,10], min_convergence = 1, beam_decay = 0.75,
+      convergence_weight = 0.4, novelty_weight = 0.2, q_weight_leaf = 0.5,
+      q_weight_high = 0.05   Identical defaults and meaning to associative_search.
+    """
+    try:
+        config = _validate_assoc_config(
+            seed_top_k=seed_top_k, bridge_top_k=bridge_top_k,
+            result_top_k=result_top_k, max_hops=max_hops,
+            target_levels=target_levels, min_convergence=min_convergence,
+            beam_decay=beam_decay, novelty_weight=novelty_weight,
+            convergence_weight=convergence_weight, q_weight_leaf=q_weight_leaf,
+            q_weight_high=q_weight_high,
+        )
+    except ValueError as e:
+        return _fmt({"status": "error", "session_id": session_id,
+                     "stage": stage, "message": str(e)})
+
+    payload = await _run_thr(
+        lambda: progressive(
+            _coll, get_embedder(_settings), session_id, stage, query=query,
+            selected_ids=selected_ids, config=config, bridge_coll=_bridge_coll,
+        )
+    )
+    return _fmt(payload)
+
+
+@_write_tool
+async def set_label(
+    edge_id: str, label: str, label_vector: list[float], model: str
+) -> str:
     """Write a semantic label and its embedding vector back to a MetaBary document.
 
     edge_id:      24-char hex ObjectId of the MetaBary (level ≤ 13).
@@ -1251,6 +1562,14 @@ def set_label(edge_id: str, label: str, label_vector: list[float], model: str) -
     Stores: semantic_label, label_vector, label_model, label_updated_at.
     Returns a confirmation with the stored values (vector omitted for brevity).
     """
+    return await _run_thr(
+        _set_label_body, edge_id, label, label_vector, model
+    )
+
+
+def _set_label_body(
+    edge_id: str, label: str, label_vector: list[float], model: str,
+) -> str:
     try:
         oid = ObjectId(edge_id)
     except Exception:
@@ -1262,7 +1581,8 @@ def set_label(edge_id: str, label: str, label_vector: list[float], model: str) -
     if doc.get("doc_type") != "baryedge":
         return f"Document {edge_id} is not a baryedge (doc_type={doc.get('doc_type')!r})."
     if (doc.get("level") or 99) > 13:
-        return f"Document {edge_id} is at level {doc.get('level')} — set_label is for MetaBary (level ≤ 13) only."
+        return (f"Document {edge_id} is at level {doc.get('level')} — "
+                "set_label is for MetaBary (level ≤ 13) only.")
     if len(label_vector) != 768:
         return f"label_vector must be 768-dimensional, got {len(label_vector)}."
 
@@ -1285,22 +1605,69 @@ def set_label(edge_id: str, label: str, label_vector: list[float], model: str) -
     })
 
 
+def _warmup_engine() -> None:
+    """Best-effort boot warm-up for the cold-start stall.
+
+    The very first Mongo query / $vectorSearch in a fresh server process
+    can take 1-2 minutes (topology discovery + HNSW index pages paged in on
+    a 6.7M-doc collection). Fire one cheap read and one small vector search
+    from a daemon thread at startup so a real tool call never pays that
+    cost. Never raises; failures are logged and non-fatal.
+    """
+    import time
+
+    try:
+        t0 = time.time()
+        _coll.find_one({}, {"_id": 1})
+        _log.info("warmup: find_one took %.1fs", time.time() - t0)
+    except Exception as e:  # pragma: no cover - env-dependent
+        _log.warning("warmup find_one failed: %s", e)
+
+    try:
+        import numpy as np
+
+        t0 = time.time()
+        rng = np.random.default_rng(0)
+        v = rng.normal(size=_settings.embed_dim)
+        v = (v / np.linalg.norm(v)).astype(np.float32).tolist()
+        hits = vector_search(
+            _coll, v, limit=3, num_candidates=50, filter={"doc_type": "node"}
+        )
+        _log.info("warmup: $vectorSearch got %d hits in %.1fs", len(hits), time.time() - t0)
+    except Exception as e:  # pragma: no cover - env-dependent
+        _log.warning("warmup $vectorSearch failed: %s", e)
+
+    try:
+        t0 = time.time()
+        ensure_indexes(_coll)
+        _log.info("warmup: ensure_indexes done in %.1fs", time.time() - t0)
+    except Exception as e:  # pragma: no cover - env-dependent
+        _log.warning("warmup ensure_indexes failed: %s", e)
+
+
 if __name__ == "__main__":
     import argparse
+    import threading
+
+    threading.Thread(target=_warmup_engine, daemon=True, name="mcp-warmup").start()
 
     parser = argparse.ArgumentParser(description="BaryGraph MCP server")
     parser.add_argument(
         "--transport",
-        choices=["stdio", "sse"],
+        choices=["stdio", "sse", "streamable-http"],
         default="stdio",
-        help="stdio (default, for Claude Code/Desktop) or sse (for mobile/HTTP clients)",
+        help="stdio (default, for Claude Code/Desktop), sse (legacy HTTP clients), "
+        "or streamable-http (for Claude remote connector)",
     )
-    parser.add_argument("--host", default="0.0.0.0", help="SSE bind host (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=8000, help="SSE port (default: 8000)")
+    parser.add_argument("--host", default="0.0.0.0", help="HTTP bind host (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8000, help="HTTP port (default: 8000)")
     args = parser.parse_args()
 
     if args.transport == "sse":
         import uvicorn
         uvicorn.run(mcp.sse_app(), host=args.host, port=args.port)
+    elif args.transport == "streamable-http":
+        import uvicorn
+        uvicorn.run(mcp.streamable_http_app(), host=args.host, port=args.port)
     else:
         mcp.run()

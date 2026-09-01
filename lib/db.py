@@ -19,6 +19,7 @@ STANDARD_INDEXES: list[list[tuple[str, int]]] = [
     [("cm2_id", ASCENDING)],
     [("node_type", ASCENDING)],
     [("edge_type", ASCENDING), ("level", ASCENDING)],
+    [("source", ASCENDING), ("level", ASCENDING), ("doc_type", ASCENDING)],
     [("parent_edge_id", ASCENDING)],
     [("properties.word", ASCENDING), ("properties.pos", ASCENDING)],
     # Word identity across languages: (word, pos) alone collides when the
