@@ -16,6 +16,7 @@ class Checkpoint:
     last_id: str | None = None
     processed: int = 0
     total: int = 0
+    file_offset: int = 0
     done: bool = False
     completed_at: str | None = None
     updated_at: str = ""

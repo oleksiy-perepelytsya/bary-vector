@@ -39,6 +39,46 @@ def _iter_jsonl(path: Path) -> Iterable[dict]:
             yield orjson.loads(line)
 
 
+def _failed_offsets(src: Path) -> set[int]:
+    """Byte offsets of malformed lines, from the sibling failed_lines.txt."""
+    failed_path = src.with_name("failed_lines.txt")
+    if not failed_path.exists():
+        return set()
+    offsets: set[int] = set()
+    for line in failed_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            offsets.add(int(line.split("\t")[-1]))
+        except ValueError:
+            continue
+    return offsets
+
+
+def _iter_senses_resumable(
+    path: Path,
+    resume_offset: int,
+    skip_offsets: set[int],
+    log,
+) -> Iterable[tuple[dict, int, int]]:
+    """Yield (record, line_start_offset, next_offset), resuming at
+    ``resume_offset`` and skipping+logging any line in ``skip_offsets``."""
+    with path.open("rb") as f:
+        if resume_offset:
+            f.seek(resume_offset)
+            log.info("resuming sense phase at byte offset %d", resume_offset)
+        while True:
+            off = f.tell()
+            line = f.readline()
+            if not line:
+                break
+            if off in skip_offsets:
+                log.warning("skipping malformed line at byte offset %d", off)
+                continue
+            yield orjson.loads(line), off, f.tell()
+
+
 def _load_sense(rec: dict) -> ParsedSense:
     rec = dict(rec)
     rec["relations"] = [ParsedSenseRelation(**r) for r in rec.get("relations", [])]
@@ -72,11 +112,18 @@ def run(argv: Sequence[str] | None = None) -> None:
         ensure_indexes(coll)
 
     batch_n = args.batch_size or settings.batch_size
-    n_senses = n_words = 0
+    n_words = 0
 
     # --- L15 sense nodes ---
+    # Resume from the last committed byte offset (avoids re-reading the whole
+    # file on a crash); skip+sense malformed lines recorded by build_line_idx.
+    skip_offsets = _failed_offsets(senses_path)
+    n_senses = cp.processed
     ops: list[UpdateOne] = []
-    for rec in _iter_jsonl(senses_path):
+    batch_next_off = 0
+    for rec, _off, next_off in _iter_senses_resumable(
+        senses_path, cp.file_offset, skip_offsets, log
+    ):
         ps = _load_sense(rec)
         doc = sense_node(ps, rec["vector"])
         ops.append(
@@ -87,14 +134,20 @@ def run(argv: Sequence[str] | None = None) -> None:
             )
         )
         n_senses += 1
+        batch_next_off = next_off
         if len(ops) >= batch_n:
             if not args.dry_run:
                 coll.bulk_write(ops, ordered=False)
             ops = []
             cp.processed = n_senses
+            cp.file_offset = batch_next_off
             cp_mod.save(cp, settings)
-    if ops and not args.dry_run:
-        coll.bulk_write(ops, ordered=False)
+    if ops:
+        if not args.dry_run:
+            coll.bulk_write(ops, ordered=False)
+        cp.processed = n_senses
+        cp.file_offset = batch_next_off
+        cp_mod.save(cp, settings)
     log.info("upserted %d L15 sense nodes", n_senses)
 
     # --- L14 word nodes (placeholder vectors) ---
