@@ -24,6 +24,7 @@ from lib.db import get_collection
 from lib.docs import baryedge
 from lib.embed import get_embedder
 from lib.match import FERMION_TIERS
+from lib.vector import unpack_vec
 from scripts._base import bootstrap, finish
 
 STAGE = "06_l14_edges"
@@ -62,7 +63,7 @@ def run(argv: Sequence[str] | None = None) -> None:
             break
         ids.append(doc["_id"])
         words.append({"properties": doc["properties"]})
-        V[i] = doc["vector"]
+        V[i] = unpack_vec(doc["vector"])
     n_words = len(ids)
     V = V[:n_words]
     log.info("loaded %d L14 word nodes with vectors", n_words)

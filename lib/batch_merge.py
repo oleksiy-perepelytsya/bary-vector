@@ -26,6 +26,7 @@ from pymongo.collection import Collection
 from lib.bary_vec import normalize
 from lib.parse_batch import normalize_term
 from lib.schema import ParsedSense, ParsedWord
+from lib.vector import unpack_vec
 
 Entry = tuple[ParsedWord, ParsedSense]
 
@@ -78,12 +79,12 @@ def find_existing_word_candidates(coll: Collection, term: str) -> list[dict[str,
 def _word_vector_estimate(coll: Collection, candidate: dict[str, Any]) -> np.ndarray | None:
     vec = candidate.get("vector")
     if vec is not None:
-        return np.asarray(vec, dtype=np.float32)
+        return unpack_vec(vec)
     # Word created by an earlier, not-yet-s05'd batch: fall back to the mean
     # of its current senses' vectors.
     props = candidate["properties"]
     sense_vecs = [
-        np.asarray(s["vector"], dtype=np.float32)
+        unpack_vec(s["vector"])
         for s in coll.find(
             {
                 "doc_type": "node",

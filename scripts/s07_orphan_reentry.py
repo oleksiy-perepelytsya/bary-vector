@@ -20,6 +20,7 @@ from lib import doi_bridge
 from lib.bary_vec import compute_bary_vec
 from lib.db import get_collection
 from lib.docs import baryedge
+from lib.vector import unpack_vec
 from scripts._base import bootstrap, finish
 
 STAGE = "07_orphan_reentry"
@@ -39,7 +40,7 @@ def run(argv: Sequence[str] | None = None) -> None:
         {"_id": 1, "vector": 1},
     )):
         orphan_ids.append(doc["_id"])
-        OV[i] = doc["vector"]
+        OV[i] = unpack_vec(doc["vector"])
     n_orphans = len(orphan_ids)
     OV = OV[:n_orphans]
 
@@ -55,7 +56,7 @@ def run(argv: Sequence[str] | None = None) -> None:
         {"_id": 1, "vector": 1},
     )):
         be_ids.append(doc["_id"])
-        BEV[i] = doc["vector"]
+        BEV[i] = unpack_vec(doc["vector"])
     n_bes = len(be_ids)
     BEV = BEV[:n_bes]
 
@@ -101,7 +102,7 @@ def run(argv: Sequence[str] | None = None) -> None:
             oid = orphan_ids[idx]
             bi = int(best_bi[idx])
             partner = be_meta[be_ids[bi]]
-            tv = np.asarray(partner["type_vector"], dtype=np.float32)
+            tv = unpack_vec(partner["type_vector"])
             q = float(partner["q"])
             acc_w = float(partner.get("accumulated_weight", q))
             bv = compute_bary_vec(OV[idx], BEV[bi], tv, q)

@@ -26,6 +26,7 @@ from lib.db import get_collection
 from lib.docs import baryedge
 from lib.embed import get_embedder
 from lib.match import greedy_unique_match, top_k_pairs
+from lib.vector import unpack_vec
 from scripts._base import bootstrap, finish
 
 STAGE = "04_l15_edges"
@@ -152,7 +153,7 @@ def run(argv: Sequence[str] | None = None) -> None:
         ids.append(doc["_id"])
         p = doc["properties"]
         words.append((p["word"], p["pos"], p.get("lang", "en")))
-        V[i] = doc["vector"]
+        V[i] = unpack_vec(doc["vector"])
         if i % 100_000 == 0 and i > 0:
             log.info("  loaded %d senses", i)
     n = len(ids)
@@ -189,7 +190,7 @@ def run(argv: Sequence[str] | None = None) -> None:
         )
         for be in coll.find({"doc_type": "baryedge", "level": 15}, {"vector": 1, "q": 1}):
             be_ids.append(be["_id"])
-            be_vecs.append(np.asarray(be["vector"], dtype=np.float32))
+            be_vecs.append(unpack_vec(be["vector"]))
             be_q.append(float(be.get("q") or 0.5))
         n_pairs = len(be_ids)
         parented_ids = {
@@ -254,7 +255,7 @@ def run(argv: Sequence[str] | None = None) -> None:
             res = coll.insert_many(edge_docs)
             for (i, j, q), eid, doc in zip(chunk, res.inserted_ids, edge_docs, strict=True):
                 be_ids.append(eid)
-                be_vecs.append(np.asarray(doc["vector"], dtype=np.float32))
+                be_vecs.append(unpack_vec(doc["vector"]))
                 be_q.append(q)
                 now = datetime.now(timezone.utc)
                 parent_updates.append(

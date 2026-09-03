@@ -21,6 +21,7 @@ from lib.bary_vec import compute_metabary_vec, level_factor
 from lib.db import get_collection
 from lib.docs import metabary
 from lib.match import ANN_EF, ANN_EF_CONSTRUCTION, ANN_M, ANN_THRESHOLD, greedy_unique_match, top_k_pairs
+from lib.vector import unpack_vec
 from scripts._base import bootstrap, finish
 
 _log = __import__("logging").getLogger(__name__)
@@ -41,7 +42,7 @@ def _load_unparented_bes(coll, level: int, embed_dim: int) -> tuple[list, list[d
     )):
         ids.append(doc["_id"])
         meta.append({"_id": doc["_id"], "accumulated_weight": doc["accumulated_weight"]})
-        V[i] = doc["vector"]
+        V[i] = unpack_vec(doc["vector"])
     n = len(ids)
     return ids, meta, V[:n]
 

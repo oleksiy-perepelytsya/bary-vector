@@ -12,16 +12,17 @@ from typing import Any
 import numpy as np
 
 from lib.schema import ParsedSense, ParsedWord
+from lib.vector import pack_vec
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _vec(v: np.ndarray | list[float] | None) -> list[float] | None:
+def _vec(v: np.ndarray | list[float] | None) -> bytes | None:
     if v is None:
         return None
-    return np.asarray(v, dtype=np.float32).tolist()
+    return pack_vec(np.asarray(v, dtype=np.float32))
 
 
 def sense_node(s: ParsedSense, vector: np.ndarray | list[float]) -> dict[str, Any]:

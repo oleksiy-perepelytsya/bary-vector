@@ -41,6 +41,7 @@ import numpy as np
 
 from lib.bary_vec import cosine, normalize
 from lib.db import cm_leaf_words, vector_search
+from lib.vector import unpack_vec
 
 _log = logging.getLogger(__name__)
 
@@ -308,7 +309,7 @@ def _exact_word_matches(
         for d in docs:
             seen_ids.add(d["_id"])
         for d in fresh:
-            v = np.asarray(d.get("vector") or [], dtype=np.float32)
+            v = unpack_vec(d["vector"]) if d.get("vector") else np.array([], dtype=np.float32)
             if v.size == 0:
                 continue
             score = _clamp_sim(cosine(qv, v))
@@ -366,7 +367,7 @@ def _seed_from_doc(coll: Any, d: dict[str, Any], qv: np.ndarray) -> Candidate | 
 def _node_candidate(
     d: dict[str, Any], score: float, qv: np.ndarray
 ) -> Candidate:
-    vec = np.asarray(d["vector"], dtype=np.float32)
+    vec = unpack_vec(d["vector"])
     props = d.get("properties") or {}
     word = props.get("word") or ""
     level = int(d.get("level", 0)) or (15 if d.get("node_type") == "sense" else 14)
@@ -430,7 +431,7 @@ def expand_upward(
         if pd is None or not pd.get("vector"):
             c.dead = True
             continue
-        vec = np.asarray(pd["vector"], dtype=np.float32)
+        vec = unpack_vec(pd["vector"])
         conn = _conn_strength(pd)
         level = int(pd.get("level", 0))
         bq = normalize(c.branch_query + config.branch_lambda * vec)
@@ -1143,7 +1144,7 @@ def _prior_smbs_near(
     for d in hits:
         if d.get("source") != "structural":
             continue
-        v = np.asarray(d.get("vector") or [], dtype=np.float32)
+        v = unpack_vec(d["vector"]) if d.get("vector") else np.array([], dtype=np.float32)
         if v.size == 0:
             continue
         c = _clamp_sim(cosine(centroid, v))

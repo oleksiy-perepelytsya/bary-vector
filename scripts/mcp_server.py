@@ -68,6 +68,7 @@ from lib.docs import metabary as _make_metabary
 from lib.doi_bridge import dois_for_node, dois_for_nodes, get_bridge_collection
 from lib.embed import get_embedder
 from lib.log import setup_logging
+from lib.vector import unpack_vec
 
 # -- helpers ------------------------------------------------------------------
 
@@ -1119,7 +1120,7 @@ def _create_word_body(
         d = found[oid]
         if not d.get("vector"):
             return f"Document {d['_id']} has no vector."
-        vecs.append(np.asarray(d["vector"], dtype=np.float32))
+        vecs.append(unpack_vec(d["vector"]))
 
     from lib.bary_vec import normalize
     word_vec = normalize(np.sum(vecs, axis=0)).tolist()  # normalized centroid — matches s05 formula
@@ -1200,8 +1201,8 @@ def _create_edge_body(
     if cm1.get("level") != cm2.get("level"):
         return f"Both CMs must be at the same level (got {cm1.get('level')} vs {cm2.get('level')})."
 
-    v1 = np.asarray(cm1["vector"], dtype=np.float32)
-    v2 = np.asarray(cm2["vector"], dtype=np.float32)
+    v1 = unpack_vec(cm1["vector"])
+    v2 = unpack_vec(cm2["vector"])
 
     if edge_type is not None:
         if not q:
@@ -1309,9 +1310,9 @@ def _create_structure_meta_bary_body(
     if mb_level < 1:
         return f"child_level {child_level} would produce SMB at level {mb_level} — minimum is 1."
 
-    v1 = np.asarray(cm1["vector"],    dtype=np.float32)
-    v2 = np.asarray(cm2["vector"],    dtype=np.float32)
-    vb = np.asarray(bridge["vector"], dtype=np.float32)
+    v1 = unpack_vec(cm1["vector"])
+    v2 = unpack_vec(cm2["vector"])
+    vb = unpack_vec(bridge["vector"])
     w1 = float(cm1.get("accumulated_weight", 1.0))
     w2 = float(cm2.get("accumulated_weight", 1.0))
     w3 = float(bridge.get("accumulated_weight", 1.0))

@@ -29,6 +29,7 @@ from lib import checkpoint as cp_mod
 from lib import doi_bridge
 from lib.bary_vec import word_vector
 from lib.db import get_collection
+from lib.vector import pack_vec, unpack_vec
 from scripts._base import bootstrap, finish
 
 STAGE = "05_word_vectors"
@@ -81,11 +82,11 @@ def run(argv: Sequence[str] | None = None) -> None:
         )
         be_ids = {s["parent_edge_id"] for s in sense_docs if s.get("parent_edge_id")}
         be_vecs = [
-            np.asarray(be["vector"], dtype=np.float32)
+            unpack_vec(be["vector"])
             for be in coll.find({"_id": {"$in": list(be_ids)}}, {"vector": 1})
         ]
         orphan_vecs = [
-            np.asarray(s["vector"], dtype=np.float32)
+            unpack_vec(s["vector"])
             for s in sense_docs
             if not s.get("parent_edge_id")
         ]
@@ -97,7 +98,7 @@ def run(argv: Sequence[str] | None = None) -> None:
         ops.append(
             UpdateOne(
                 {"_id": w["_id"]},
-                {"$set": {"vector": vec.tolist(), "updated_at": datetime.now(timezone.utc)}},
+                {"$set": {"vector": pack_vec(vec), "updated_at": datetime.now(timezone.utc)}},
             )
         )
         if not args.dry_run:
