@@ -33,10 +33,24 @@ from scripts._base import bootstrap, finish
 STAGE = "03_insert_nodes"
 
 
-def _iter_jsonl(path: Path) -> Iterable[dict]:
+def _iter_jsonl(path: Path, log=None) -> Iterable[dict]:
+    """Yield parsed JSONL records, skipping malformed lines.
+
+    JSONL is line-oriented, so a corrupt line only costs the single record
+    (e.g. a truncated write from a crashed embedder). Catch the decode error,
+    log the offending file line, and continue from the next line rather than
+    aborting the whole stage.
+    """
     with path.open("rb") as f:
-        for line in f:
-            yield orjson.loads(line)
+        for lineno, line in enumerate(f, 1):
+            try:
+                yield orjson.loads(line)
+            except orjson.JSONDecodeError as e:
+                if log is not None:
+                    log.warning(
+                        "skipping malformed JSONL line %d in %s: %s",
+                        lineno, path.name, e,
+                    )
 
 
 def _load_sense(rec: dict) -> ParsedSense:
@@ -76,7 +90,7 @@ def run(argv: Sequence[str] | None = None) -> None:
 
     # --- L15 sense nodes ---
     ops: list[UpdateOne] = []
-    for rec in _iter_jsonl(senses_path):
+    for rec in _iter_jsonl(senses_path, log):
         ps = _load_sense(rec)
         doc = sense_node(ps, rec["vector"])
         ops.append(
@@ -99,7 +113,7 @@ def run(argv: Sequence[str] | None = None) -> None:
 
     # --- L14 word nodes (placeholder vectors) ---
     ops = []
-    for rec in _iter_jsonl(words_path):
+    for rec in _iter_jsonl(words_path, log):
         pw = _load_word(rec)
         doc = word_node(pw)
         ops.append(
