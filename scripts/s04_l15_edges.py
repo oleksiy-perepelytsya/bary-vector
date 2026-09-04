@@ -14,8 +14,10 @@ to orphan re-entry.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 from pymongo import UpdateOne
@@ -30,6 +32,20 @@ from lib.vector import unpack_vec
 from scripts._base import bootstrap, finish
 
 STAGE = "04_l15_edges"
+
+# V (n_senses x embed_dim) is ~208 GB at 4096-dim for the full build — far too
+# large to hold resident alongside the ANN pairing working set. Back it by a
+# disk memmap in /storage (RAID, ~6 TB free) so only touched rows page into
+# RAM; the file is deleted when the stage finishes.
+S04_MMAP_PATH = os.environ.get("S04_MMAP_PATH", "/storage/bary/s04_V.mmap")
+
+
+def _cleanup_mmap(log) -> None:
+    """Release + remove the disk-backed V file so ~208 GB isn't leaked."""
+    try:
+        Path(S04_MMAP_PATH).unlink(missing_ok=True)
+    except Exception:
+        log.warning("could not remove V memmap file %s", S04_MMAP_PATH)
 
 
 def _word_neighborhood(coll, word: str, pos: str, lang: str) -> tuple[list[str], list[str]]:
@@ -146,7 +162,12 @@ def run(argv: Sequence[str] | None = None) -> None:
 
     ids: list = []
     words: list[tuple[str, str, str]] = []
-    V = np.empty((_MAX_SENSES, settings.embed_dim), dtype=np.float32)
+    mmap_path = Path(S04_MMAP_PATH)
+    mmap_path.parent.mkdir(parents=True, exist_ok=True)
+    V = np.memmap(
+        mmap_path, mode="w+", dtype=np.float32,
+        shape=(_MAX_SENSES, settings.embed_dim),
+    )
     for i, doc in enumerate(cur):
         if i >= _MAX_SENSES:
             break
@@ -162,6 +183,11 @@ def run(argv: Sequence[str] | None = None) -> None:
     if n < 2:
         log.warning("fewer than 2 L15 senses (%d) — nothing to pair", n)
         cp.total = n
+        try:
+            del V
+        except Exception:
+            pass
+        _cleanup_mmap(log)
         if not args.dry_run:
             finish(cp, settings, log)
         return
@@ -279,6 +305,12 @@ def run(argv: Sequence[str] | None = None) -> None:
 
     cp.processed = n_pairs + n_reentry
     cp.total = n_pairs + n_reentry
+    # Release the disk-backed V (flush + unmap) and remove the temp file.
+    try:
+        del V
+    except Exception:
+        pass
+    _cleanup_mmap(log)
     if not args.dry_run:
         finish(cp, settings, log)
 

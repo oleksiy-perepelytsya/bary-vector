@@ -55,6 +55,50 @@ ANN_M: int = int(os.environ.get("ANN_M", 16))
 ANN_EF_CONSTRUCTION: int = int(os.environ.get("ANN_EF_CONSTRUCTION", 100))
 ANN_BUILD_CHUNK: int = int(os.environ.get("ANN_BUILD_CHUNK", 50_000))
 
+# ANN search runs on a projected subspace, not the full embedding dimension.
+# The stored/graph embeddings stay at EMBED_DIM (e.g. 4096 for qwen), but the
+# HNSW index itself would need ~16 KB/point at 4096-dim (≈210 GB for 12.7M
+# senses) — far more than this box's RAM. Projecting the *match* down to
+# MATCH_DIM (default 1024 = 4096/4) shrinks the HNSW index to a viable ~55 GB.
+# Neighbor rows map back to the full-dim vectors unchanged; only the cosine
+# *scores* used for ranking are measured in the reduced space (approximate,
+# consistent with HNSW being approximate anyway).
+MATCH_DIM: int = int(os.environ.get("MATCH_DIM", 1024))
+# Fixed seed so projection is deterministic across runs.
+_PROJECT_SEED = 0xC0FFEE
+
+_proj_cache: dict[int, np.ndarray] = {}
+
+
+def _gaussian_projector(dim: int) -> np.ndarray:
+    """Seeded Gaussian random projection matrix (MATCH_DIM, dim), cached.
+
+    Johnson–Lindenstrauss-style: a fixed random matrix roughly preserves
+    pairwise cosine structure, so nearest-neighbour discovery in the reduced
+    space tracks the full space well enough for ranking.
+    """
+    proj = _proj_cache.get(dim)
+    if proj is None:
+        rng = np.random.default_rng(_PROJECT_SEED)
+        # Normalise columns approx. so projection ~ rotation+scale (keeps
+        # cosine structure near-identity for orthonormal-ish + small noise).
+        m = rng.standard_normal((MATCH_DIM, dim)).astype(np.float32)
+        proj = m / np.sqrt(dim)  # scale so E[||xP||²] ≈ ||x||²
+        _proj_cache[dim] = proj
+    return proj
+
+
+def _project_match(vectors: np.ndarray) -> np.ndarray:
+    """Reduce ``vectors`` to MATCH_DIM for ANN search (row indices unchanged)."""
+    dim = vectors.shape[1]
+    if dim <= MATCH_DIM:
+        return vectors
+    proj = _gaussian_projector(dim)
+    red = vectors @ proj.T
+    norms = np.linalg.norm(red, axis=1, keepdims=True)
+    norms[norms == 0.0] = 1.0
+    return red / norms
+
 
 def top_k_pairs(
     vectors: np.ndarray,
@@ -100,12 +144,16 @@ def _ann_pairs(vectors: np.ndarray, k: int | None, min_score: float = 0.0) -> It
     import hnswlib  # optional at import time; always present in production
 
     n, dim = vectors.shape
+    reduced = _project_match(vectors) if dim > MATCH_DIM else vectors
+    match_dim = reduced.shape[1]
+    if match_dim != dim:
+        _log.info("ANN match: projecting %d -> %d dims", dim, match_dim)
     nn_k = min(n - 1, ANN_K)
     ef = max(ANN_EF, (nn_k + 1) * 2)
 
     _log.info("HNSW init: n=%d dim=%d ef_construction=%d M=%d ANN_K=%d",
-              n, dim, ANN_EF_CONSTRUCTION, ANN_M, nn_k)
-    index = hnswlib.Index(space="cosine", dim=dim)
+              n, match_dim, ANN_EF_CONSTRUCTION, ANN_M, nn_k)
+    index = hnswlib.Index(space="cosine", dim=match_dim)
     index.init_index(max_elements=n, ef_construction=ANN_EF_CONSTRUCTION, M=ANN_M)
 
     # Add in chunks so we get periodic progress log lines instead of one
@@ -114,7 +162,7 @@ def _ann_pairs(vectors: np.ndarray, k: int | None, min_score: float = 0.0) -> It
     t_build_start = time.monotonic()
     for start in range(0, n, chunk):
         end = min(start + chunk, n)
-        index.add_items(vectors[start:end], np.arange(start, end))
+        index.add_items(reduced[start:end], np.arange(start, end))
         elapsed = time.monotonic() - t_build_start
         rate = end / elapsed if elapsed > 0 else 0
         eta = (n - end) / rate if rate > 0 else float("inf")
@@ -126,7 +174,7 @@ def _ann_pairs(vectors: np.ndarray, k: int | None, min_score: float = 0.0) -> It
 
     _log.info("HNSW knn_query: n=%d k=%d ef=%d", n, nn_k + 1, ef)
     t_query = time.monotonic()
-    labels, distances = index.knn_query(vectors, k=nn_k + 1)  # +1: self is returned
+    labels, distances = index.knn_query(reduced, k=nn_k + 1)  # +1: self is returned
     _log.info("HNSW knn_query done in %.0fs", time.monotonic() - t_query)
 
     _log.info("dedup pairs...")
