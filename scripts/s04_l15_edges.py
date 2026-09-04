@@ -39,6 +39,30 @@ STAGE = "04_l15_edges"
 # RAM; the file is deleted when the stage finishes.
 S04_MMAP_PATH = os.environ.get("S04_MMAP_PATH", "/storage/bary/s04_V.mmap")
 
+# sense/word count filters are `{doc_type, node_type, level}` — no existing
+# index covers all three, so full counts scan ~12.7M docs and exceed the 120s
+# socket timeout. This covering index makes those counts index-only. It also
+# serves s05–s07 counts for free. Safe to drop manually after the build; the
+# name is exported so removal is a one-liner.
+S04_COVER_INDEX = "doc_type_1_node_type_1_level_1"
+_COVER_FILTER = {"doc_type": "node", "node_type": "sense", "level": 15}
+# Fallback size if the cover index can't be created/used (avoids hard-blocking).
+S04_MAX_SENSES_CAP = int(os.environ.get("S04_MAX_SENSES_CAP", 13_500_000))
+
+
+def _ensure_cover_index(coll, log) -> bool:
+    """Create the covering index; return True if it's serving counts."""
+    try:
+        coll.create_index(
+            [("doc_type", 1), ("node_type", 1), ("level", 1)],
+            name=S04_COVER_INDEX,
+            background=True,
+        )
+        return True
+    except Exception as e:  # noqa: BLE001 — count must never hard-block the build
+        log.warning("could not create cover index (%s); falling back to cap", e)
+        return False
+
 
 def _cleanup_mmap(log) -> None:
     """Release + remove the disk-backed V file so ~208 GB isn't leaked."""
@@ -147,15 +171,19 @@ def run(argv: Sequence[str] | None = None) -> None:
         )
 
     # --- Load all L15 sense nodes ---
-    # Pre-allocate numpy array with an exact upper bound so we never hold two
-    # copies of the vector data in memory simultaneously (~37 GB Python-list
-    # overhead with list(cur), ~10 GB double-copy with np.stack(vecs)).
-    _MAX_SENSES = args.limit or coll.count_documents(
-        {"doc_type": "node", "node_type": "sense", "level": 15}
-    )
+    # Pre-allocate with an exact upper bound so we never hold two copies of the
+    # vector data in memory simultaneously. The covering index makes the count
+    # index-only; if it's unavailable we fall back to a fixed cap (never block).
+    if args.limit:
+        _MAX_SENSES = args.limit
+    elif _ensure_cover_index(coll, log):
+        _MAX_SENSES = coll.count_documents(_COVER_FILTER)
+    else:
+        _MAX_SENSES = S04_MAX_SENSES_CAP
+        log.warning("no cover index; pre-allocating cap %d", _MAX_SENSES)
     log.info("streaming L15 senses from MongoDB (pre-alloc %d)", _MAX_SENSES)
     cur = coll.find(
-        {"doc_type": "node", "node_type": "sense", "level": 15},
+        _COVER_FILTER,
         {"_id": 1, "vector": 1, "properties.word": 1, "properties.pos": 1,
          "properties.lang": 1},
     ).sort("_id", 1)
@@ -170,6 +198,12 @@ def run(argv: Sequence[str] | None = None) -> None:
     )
     for i, doc in enumerate(cur):
         if i >= _MAX_SENSES:
+            # Only reachable via the fallback cap — never silently truncate.
+            if not args.limit and _MAX_SENSES == S04_MAX_SENSES_CAP:
+                raise RuntimeError(
+                    f"hit pre-alloc cap ({S04_MAX_SENSES_CAP}) — senses exceed it; "
+                    "raise S04_MAX_SENSES_CAP or fix the covering index"
+                )
             break
         ids.append(doc["_id"])
         p = doc["properties"]
