@@ -154,24 +154,72 @@ if _public_host:
     _allowed_hosts.append(_public_host)
     _allowed_origins.append(f"https://{_public_host}")
 
+_BG_INSTRUCTIONS = """BaryGraph (BG) is a semantic graph+vector index built from the kaikki.org
+English Wiktionary (~6.7M docs: 1.44M words, 1.74M senses, 2.5M BaryEdges,
+~989k MetaBary triads — the live instance is mid-build, so current counts may
+run below these until the pipeline completes). Its core idea: **relationships
+are first-class, searchable objects**, not thin edges between nodes. Every
+relation is a *BaryEdge* (its own stored vector), and BaryEdges pair up into
+*MetaBary triads* (child1 ↔ child2 via a **bridge**) that recurse upward into
+increasingly abstract relation-clusters (L15 senses → L14 words → L13…L10
+MetaBary levels).
+
+Think of it as an **associative atlas / coordinate system**, not an answer
+engine. A BG result is a *prompt for investigation*, never a proof.
+
+## What you CAN get
+- **Concepts near a query**: word nodes (IPA, etymology, forms, glosses) and
+  sense nodes (gloss, tags, topics).
+- **Relations as objects**: BaryEdges (edge_type: synonym/antonym/hypernym/…,
+  strength *q*), MetaBary triads with the bridge — the concept-set connecting
+  two otherwise-distant branches. This surfaces *productive unfamiliar
+  adjacency*: structure that flat document search does not provide.
+- **Everything in one call**: `context_search` returns each hit pre-expanded
+  with its full leaf content **and** full ancestor chain to the root — the
+  default starting point for any meaning-based question. No follow-up calls
+  for most cases.
+- **Exact-string lookups** when you need dictionary precision instead of
+  semantics: `find_word`, `word_senses`, `word_edges`.
+- **Deep-dives on a specific id**: `leaf_nodes` (full subtree),
+  `traverse_up` (ancestry), `edge_info` (edge/triad details),
+  `sample_metabary` (browse randomly).
+
+## What you CANNOT get
+- **Verified facts.** Results are coordinates to *interpret, test, reject, or
+  develop* — not answers, citations, causal claims, or recommendations. The
+  graph is a supervisor to no one and an answer key to no one.
+- **Numbers / instance-level specifics.** It encodes methodology granularity
+  ("bounded design windows", route types, unit families) — not filled values
+  ("200 °C, 12 h") or full dimensional chains (those may require your own
+  inference, e.g. Jy = kg/s²).
+- **Confidence.** Noisy edges are expected; sometimes a "bad" edge is the most
+  productive prompt. No edge is labeled reliable.
+- **Coherent top levels.** Ancestry is a single linear parent chain, and
+  L10/L11 clusters can degrade into unrelated residues (e.g. church/synapse
+  words surfacing under a materials cluster) — discount them as background
+  noise.
+
+## How to use
+1. Start with **`context_search`** for any meaning-based question: one call =
+   hit + full subtree + full lineage.
+2. Treat results as **coordinates worth investigating**: use them to form a
+   better question, find a bridge/tension/contradiction, or reject them. The
+   graph retrieves; you interpret. Two-phase workflow: *retrieve a coordinate,
+   then do the real work* (domain knowledge, sources, reasoning).
+3. Reach for `find_word`/`word_senses`/`word_edges` only for exact-string
+   lookups, and for `semantic_search`/`leaf_nodes`/`traverse_up` only when
+   `context_search` caps or raw dumps are needed.
+
+## Links
+- Repo (README + PoC spec):
+  https://github.com/oleksiy-perepelytsya/bary-graph
+- Zenodo pilot: https://doi.org/10.5281/zenodo.20186500
+"""
+
+
 mcp = FastMCP(
     "barygraph",
-    instructions=(
-        "BaryGraph knowledge graph built from the kaikki.org English dictionary. "
-        "L14 nodes are words (node_type='word'), L15 nodes are individual senses "
-        "(node_type='sense'). L15 BaryEdges pair sense nodes; L14 BaryEdges connect "
-        "word nodes via kaikki relations (synonyms, antonyms, hypernyms…). "
-        "L13–L10 are MetaBary triads: each MB has two children (cm1, cm2) and a "
-        "bridge. "
-        "START WITH context_search for any meaning/concept lookup — it runs "
-        "$vectorSearch and returns each hit already expanded with its full leaf "
-        "content (senses/words) and its full ancestor chain to the root, so no "
-        "follow-up leaf_nodes or traverse_up call is needed. Reach for the other "
-        "tools only when you need something context_search doesn't cover: "
-        "sample_metabary to browse randomly, edge_info for a specific id, "
-        "leaf_nodes for a raw full-subtree dump on a specific id, find_word/"
-        "word_senses/word_edges for exact-string lookups rather than semantic ones."
-    ),
+    instructions=_BG_INSTRUCTIONS,
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=False,
         allowed_hosts=_allowed_hosts,
