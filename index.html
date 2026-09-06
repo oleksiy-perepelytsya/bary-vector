@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BaryGraph — a coordinate system for models</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#121724; --line:#242c40;
+    --text:#e6ebf5; --muted:#9aa6bf;
+    --blue:#5b8cff; --red:#ff6b6b; --accent:#7de2d1;
+    --max:1080px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;}
+  a{color:var(--blue)}
+  .wrap{max-width:var(--max);margin:0 auto;padding:0 24px}
+  header{padding:40px 0 64px;border-bottom:1px solid var(--line);
+    background:radial-gradient(900px 400px at 20% -10%,rgba(91,140,255,.20),transparent 70%),
+               radial-gradient(700px 380px at 85% 0%,rgba(255,107,107,.14),transparent 70%);}
+  .logo {
+    width: min(60vw, 280px);
+    height: auto;
+    display: block;
+    margin: 0 auto 24px;
+    filter: drop-shadow(0 4px 12px rgba(91, 140, 255, 0.2));
+  }
+  .badge{display:inline-block;font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent);border:1px solid var(--line);border-radius:99px;padding:6px 14px;margin-bottom:22px}
+  h1{font-size:clamp(38px,6vw,68px);line-height:1.05;margin:0 0 18px;letter-spacing:-.02em}
+  h1 span{background:linear-gradient(90deg,var(--blue),var(--accent));-webkit-background-clip:text;
+    background-clip:text;color:transparent}
+  .lede{font-size:clamp(18px,2.3vw,22px);color:var(--muted);max-width:720px}
+  .cta{margin-top:34px;display:flex;gap:14px;flex-wrap:wrap}
+  .btn{display:inline-block;padding:13px 22px;border-radius:10px;text-decoration:none;font-weight:600}
+  .btn.primary{background:var(--blue);color:#06090f}
+  .btn.ghost{border:1px solid var(--line);color:var(--text)}
+  section{padding:72px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:clamp(26px,3.4vw,36px);margin:0 0 12px;letter-spacing:-.01em}
+  .sub{color:var(--muted);max-width:760px;margin:0 0 34px}
+  .grid{display:grid;gap:20px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px}
+  .card h3{margin:0 0 10px;font-size:18px}
+  .card p{margin:0;color:var(--muted);font-size:15px}
+  .schema{max-width:100%;width:min(760px,100%);height:auto;display:block;margin:0 auto}
+  .eq{background:#0f1420;border:1px solid var(--line);border-radius:12px;padding:18px 20px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;color:#cfe0ff;overflow-x:auto}
+  table{width:100%;border-collapse:collapse;background:var(--panel);
+    border:1px solid var(--line);border-radius:14px;overflow:hidden;font-size:15px}
+  th,td{padding:14px 16px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#161d2e;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  tr:last-child td{border-bottom:none}
+  blockquote{margin:0;color:var(--text)}
+  .quote{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--blue);
+    border-radius:12px;padding:24px}
+  .quote p{margin:0 0 14px;font-size:16px}
+  .who{color:var(--muted);font-size:13px;letter-spacing:.06em;text-transform:uppercase}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;text-align:center}
+  .stat .num{font-size:clamp(26px,3.6vw,38px);font-weight:700;color:var(--accent)}
+  .stat .lbl{color:var(--muted);font-size:14px}
+  code{background:#0f1420;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:14px}
+  .warn{background:rgba(255,107,107,.08);border:1px solid rgba(255,107,107,.35);
+    border-radius:14px;padding:24px}
+  footer{padding:56px 0 80px;color:var(--muted);font-size:14px}
+ @media(max-width:860px){.g3,.g2,.stats{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <img src="barygraph_logo_inverted.png" alt="BaryGraph Logo" class="logo">
+    <div class="badge">Proof of concept · Kaikki / Wiktionary build</div>
+    <h1>BaryGraph is a <span>coordinate system</span> for models.</h1>
+    <p class="lede">A graph-and-vector architecture for exploratory retrieval: finding not only what is near a query,
+      but which inspectable relation might connect otherwise distant regions of a semantic space.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://doi.org/10.5281/zenodo.20186500">Read the pilot paper (DOI)</a>
+      <a class="btn ghost" href="#how">How it works</a>
+      <a class="btn ghost" href="#feedback">Models feedback</a>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>The problem: similarity is not direction</h2>
+    <p class="sub">When a model searches for what is close to a query, it often finds synonyms, familiar associations,
+      and more examples of the same idea. That is useful for lookup, but limited for exploration.</p>
+    <p class="sub">When asked to go further, a model may combine nearby words into a fluent explanation simply because
+      they frequently occur together. The result can look grounded while containing little more than semantic
+      proximity and verbal completion.</p>
+    <p class="sub">Exploration needs a richer coordinate system: one that can locate not only similar concepts, but also
+      relations, tensions, contradictions, and intermediate structures. BaryGraph makes those relationships
+      retrievable. A result may be a bridge, a contradiction, a higher-order pattern, or only a single useful term.
+      It does not require every result to become a full answer.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Most retrieval returns familiar material. BaryGraph returns a coordinate worth investigating.</h2>
+    <p class="sub">Exploratory questions do not always need a longer answer. They often need a better next coordinate:
+      a distinction, bridge, or relationship that changes what the question could mean.</p>
+    <div class="grid g2">
+      <div class="card"><h3>Relations are first-class</h3>
+        <p>Two concepts become the children of a <strong>BaryEdge</strong>, which receives its own stored vector.</p></div>
+      <div class="card"><h3>Relations of relations</h3>
+        <p>BaryEdges become children of higher-order <strong>MetaBary</strong> triads, recursing upward into a relational forest.</p></div>
+      <div class="card"><h3>Contradictions are coordinates</h3>
+        <p>Synonyms show proximity. Opposing terms create direction. BaryGraph preserves some apparent mismatches as navigational tension worth inspecting.</p></div>
+      <div class="card"><h3>All of it is retrievable</h3>
+        <p>Nodes, edges, contradictions, and triads live in one index, reachable by ordinary nearest-neighbor search.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2>The idea in one minute</h2>
+    <p class="sub">The name borrows from the barycenter in physics: the shared center generated by two bodies is
+      treated as a real location with properties of its own. BaryGraph applies that intuition to semantic relations.
+      It gives models a space containing not only points of similarity, but relational directions and opposing terms.</p>
+
+    <!-- MetaBary = 2 children from L - 2 + 1 bridge from L - 1 -->
+    <img src="bary-graph-schema.png" alt="BaryGraph schema" class="schema">
+
+    <p class="sub" style="margin-top:28px">At the leaf level, a simplified construction is:</p>
+    <div class="eq">v_edge = normalize( q·v₁ + q·v₂ + (1 − q)·v_context )</div>
+    <p class="sub" style="margin-top:16px">At higher levels, construction is algebra on vectors already stored in
+      the graph — no new embedding call is required for each recursive step.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Why this is different</h2>
+    <table>
+      <tr><th>Flat vector retrieval</th><th>BaryGraph retrieval</th></tr>
+      <tr><td>Finds text or concepts near a query</td><td>Finds concepts, relations, contradictions, and higher-order patterns</td></tr>
+      <tr><td>Primarily rewards semantic similarity</td><td>Represents similarity, distance, tension, and opposition</td></tr>
+      <tr><td>Often returns synonyms or familiar neighbors</td><td>Can surface a non-synonymic bridge between distant terms</td></tr>
+      <tr><td>May continue toward a complete answer</td><td>Can stop at a term, relation, or short hypothesis</td></tr>
+      <tr><td>Similarity is mostly attached to documents</td><td>Meaning can be attached to the relationship between documents</td></tr>
+      <tr><td>Strong for direct relevance and lookup</td><td>Designed to surface bridges, tensions, and intermediate structure</td></tr>
+      <tr><td>Often preserves the current framing</td><td>Can introduce tension that challenges the current framing</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="feedback">
+  <div class="wrap">
+    <h2>What models said after testing it</h2>
+    <p class="sub">Four independent language models probed the Kaikki proof of concept with open-ended questions and
+      described what they found. These examples illustrate an interaction pattern, not benchmark performance: the
+      system may return a useful bridge, a weak edge, or only a promising term.</p>
+    <div class="grid g2">
+      <div class="quote">
+        <blockquote><p>“It behaves more like an <strong>associative atlas</strong> than a question-answering
+        system. It found a genuine invariant across unrelated domains.”</p></blockquote>
+        <div class="who">Tester probing coral reefs · legal precedent · error-correcting codes</div>
+      </div>
+      <div class="quote">
+        <blockquote><p>“The graph <strong>refused to let boredom be an absence.</strong> It paired it with
+        <code>overstimulation</code> on the same axis. That reframed my whole question — a much better
+        hypothesis than the one I started with.”</p></blockquote>
+        <div class="who">Tester probing boredom · ritual · mathematics</div>
+      </div>
+      <div class="quote">
+        <blockquote><p>“A weak lexical bridge — <code>turn on</code> — prompted a stronger functional reading:
+        redundancy is often <strong>latent until activated</strong>.”</p></blockquote>
+        <div class="who">On the value of an apparently noisy edge</div>
+      </div>
+      <div class="quote">
+        <blockquote><p>“A <strong>de-cliché device</strong>.”</p></blockquote>
+        <div class="who">On lateral ideation for writing and design</div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:20px">
+      <h3>A de-cliché device</h3>
+      <p>Models are good at producing the first plausible association. BaryGraph introduces friction: a distant term,
+        a contradictory relation, or a bridge that is not immediately explainable. It preserves that tension instead
+        of smoothing it into another familiar continuation. The goal is not to make every answer strange, but to prevent
+        familiarity from being mistaken for insight.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Examples from the proof of concept</h2>
+    <div class="grid g3">
+      <div class="card"><h3>Measure between ritual and number</h3>
+        <p>A probe around boredom, ritual and counting returned <code>mensural</code>, <code>metrical</code>,
+        <code>cadenced</code>, <code>foot-tapping</code>, <code>time step</code>. The graph supplied the
+        unexpected hinge: <strong>meter</strong>. The possible coordinate was
+        <strong>undifferentiated time → imposed measure → ritual and number</strong>, not a synonym for any one of them.</p></div>
+      <div class="card"><h3>Redundancy as latent resilience</h3>
+        <p>Ecological overlap, duplicate components, repeated message structure and removable legal surplus
+        converged on one distinction: <strong>useful redundancy = multiplicity + failure independence</strong>.</p></div>
+      <div class="card"><h3>Networks across substrates</h3>
+        <p>Mycelial networks and internet architecture surfaced <code>anastomosis</code> beside interconnect
+        terms — precise vocabulary for asking which topological properties are substrate-independent.</p></div>
+      <div class="card"><h3>Contradiction as tension</h3>
+        <p>An <code>inactigram</code> placed against <code>memory / blank</code> looked malformed as a statement, but sharp as a coordinate: recording inactivity means it is no longer blank. The contradiction opened an inspectable direction without claiming a conclusion.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>The current build</h2>
+    <p class="sub">The Kaikki English proof of concept, built and queried locally.</p>
+    <div class="stats">
+      <div class="stat"><div class="num">6.66M</div><div class="lbl">documents indexed</div></div>
+      <div class="stat"><div class="num">1.74M</div><div class="lbl">sense nodes</div></div>
+      <div class="stat"><div class="num">2.50M</div><div class="lbl">leaf BaryEdges</div></div>
+      <div class="stat"><div class="num">~989k</div><div class="lbl">MetaBary triads (L13–L10)</div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>How to think about results</h2>
+    <div class="grid g2" style="margin-bottom:24px">
+      <div class="card"><h3>1. Retrieve a coordinate</h3>
+        <p>Ask an open question and inspect nodes, BaryEdges, MetaBary structures, contradictions, parent chains, and weak bridges. Treat the result as a possible direction, not an answer.</p></div>
+      <div class="card"><h3>2. Follow or reject the tension</h3>
+        <p>Ask what the relation changes. If it reveals a useful distinction or intermediate pattern, investigate it. If it does not survive inspection, reject it.</p></div>
+      <div class="card"><h3>3. Stop when the coordinate is enough</h3>
+        <p>A useful result may be one term, one relation, or a short hypothesis. Do not expand it merely to satisfy a target answer length.</p></div>
+      <div class="card"><h3>4. Do the real work</h3>
+        <p>Use sources, domain knowledge, experiments, formal models, or human judgment to decide whether the coordinate deserves development.</p></div>
+    </div>
+    <div class="warn">
+      <h3 style="margin:0 0 10px">What BaryGraph does not claim</h3>
+      <p style="margin:0;color:var(--muted)">A retrieved bridge is not asserted to be true, causal, or
+      explanatory. A BaryGraph result is a <strong>prompt for investigation, not a proof</strong>. Do not use it
+      alone when you need a verified fact, a causal conclusion, or a high-stakes recommendation in scientific,
+      clinical, legal or operational settings.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    BaryGraph · Kaikki English proof of concept ·
+    <a href="https://doi.org/10.5281/zenodo.20186500">10.5281/zenodo.20186500</a><br>
+    A coordinate system for models. Architecture is corpus-agnostic. Each application needs its own evaluation.
+  </div>
+</footer>
+
+</body>
+</html>
